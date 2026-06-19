@@ -2,7 +2,7 @@
 End-to-end router evaluation. 
 
   1. REFERENCE BOUNDS: always-oracle and always-cheap (the frame).
-  2. SINGLE OPERATING POINT at alpha=0.10: the router, with AvgAcc,
+  2. SINGLE OPERATING POINT at alpha=0.15: the router, with AvgAcc,
      CostSave, routed fraction, and measured relative risk (should be <= alpha).
   3. PERFORMANCE-COST CURVE: sweep alpha; each row is a point on the
      accuracy/cost tradeoff. This is the figure.
@@ -39,9 +39,9 @@ def main():
     print(f"  always-cheap  : acc={ac['avg_acc']:.3f}  cost=${ac['avg_cost']:.5f}  "
           f"cost_save={ac['cost_save']:.1%}")
 
-    # 2: single operating point at alpha=0.10 
-    print("\n2: CERTIFIED ROUTER at alpha=0.10, delta=0.10")
-    m = run_router(calib, test, scorer, alpha=0.10, delta=0.10)
+    # 2: single operating point at alpha=0.15
+    print("\n2: CERTIFIED ROUTER at alpha=0.15, delta=0.10")
+    m = run_router(calib, test, scorer, alpha=0.15, delta=0.10)
     lam_str = f"{m['lambda']:.3f}" if m['lambda'] is not None else "None"
     print(f"  λ̂ = {lam_str}")
     print(f"  AvgAcc            = {m['avg_acc']:.3f}")
