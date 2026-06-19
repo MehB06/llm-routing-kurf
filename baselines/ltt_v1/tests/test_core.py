@@ -8,6 +8,11 @@ Tests:
   2. THE GUARANTEE: calibrate λ̂ on the calib split, apply it to the
      TEST split, measure the true relative-loss rate. Repeat over many seeds.
      The fraction of seeds where test risk > alpha must be <= delta (roughly).
+     NOTE: run at a FEASIBLE alpha. The qwen3/gpt-5 pair has a relative-risk
+     floor near 0.15 (routable headroom ~15%), so alpha < ~0.15 is infeasible:
+     no threshold can certify, the router correctly returns None, and the
+     multi-seed test degenerates to "routes nothing." We test where the pair
+     genuinely has headroom (alpha=0.15).
 
   3. MONOTONICITY: larger alpha => lower λ̂ => more queries routed cheap.
      (A looser guarantee should let us save more.)
@@ -15,7 +20,9 @@ Tests:
   4. RANDOM-SCORER ABLATION: replace the real scorer with random scores. The
      guarantee must STILL hold (LTT is distribution-free). This proves safety
      comes from calibration, not from the scorer being good. Savings will be
-     worse, but the guarantee holds — the key conceptual point.
+     worse, but the guarantee holds — the key conceptual point. Run at a
+     feasible alpha (0.20) so a weak random scorer can still certify SOMETHING
+     and the demonstration isn't just "None"; safety is what we're checking.
 """
 
 import numpy as np
@@ -89,7 +96,8 @@ def main():
     # leaks training queries into other seeds' test sets and corrupts the result.
     # We use 15 seeds as a runtime/accuracy compromise.
     print("\n2: GUARANTEE — test-risk <= alpha across seeds (retrain per seed)")
-    ALPHA, DELTA, N_SEEDS = 0.10, 0.10, 15
+    # alpha=0.15 is the smallest FEASIBLE bar for this pair (see header note).
+    ALPHA, DELTA, N_SEEDS = 0.15, 0.10, 15
     violations = 0
     routed_fracs = []
     for seed in range(N_SEEDS):
@@ -146,12 +154,12 @@ def main():
                   for q in calib_q]
     rand_test = [CalibQuery(s, q.cheap_correct, q.oracle_correct)
                  for q, s in zip(test_q, rng.random(len(test_q)))]
-    res = calibrate_threshold(rand_calib, alpha=0.10, delta=0.10)
+    res = calibrate_threshold(rand_calib, alpha=0.20, delta=0.10)
     lam = res["lambda_hat"]
     if lam is not None:
         tr_risk, n_routed = true_risk(rand_test, lam)
         print(f"  random scorer: λ̂={lam:.3f}, test risk={tr_risk:.3f} "
-              f"(<= 0.10? {tr_risk <= 0.10 + 0.05}), routed={n_routed/len(rand_test):.3f}")
+              f"(<= 0.20? {tr_risk <= 0.20 + 0.05}), routed={n_routed/len(rand_test):.3f}")
     else:
         print(f"  random scorer: no safe λ found (acceptable — very conservative)")
 

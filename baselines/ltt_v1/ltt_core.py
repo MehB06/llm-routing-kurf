@@ -177,19 +177,20 @@ def calibrate_threshold(
         else:
             pvals[i] = hoeffding_bentkus_pvalue(risks[i], ns[i], alpha)
 
-    # Empirical risk is monotone DECREASING in λ. 
-    # We also require a minimum routed count so we never "certify" a degenerate
-    # threshold that routes almost nothing (n too small to be meaningful).
+
     MIN_ROUTED = 30  
-    
-    order = np.argsort(lambdas)  # low -> high (permissive -> conservative)
-    seq_p = []
-    seq_lam = []
+
+    # Build the fixed sequence FROM THE SAFE END (high lambda) toward permissive
+    # (low lambda), over ELIGIBLE thresholds only (n >= MIN_ROUTED). Filtering
+    # first (rather than poisoning ineligible lambdas with p=1.0) is essential:
+    # the high-lambda end has tiny n, so a poisoned p there would break the FST
+    # chain at its very first step and certify nothing.
+    order = np.argsort(lambdas)[::-1]  # high -> low (safe -> permissive)
+    seq_p, seq_lam = [], []
     for i in order:
         if ns[i] < MIN_ROUTED:
-            seq_p.append(1.0)   # treat as non-certifiable: too few routed
-        else:
-            seq_p.append(pvals[i])
+            continue  # ineligible: not part of the tested family at all
+        seq_p.append(pvals[i])
         seq_lam.append(lambdas[i])
 
     lam_hat = fixed_sequence_test(seq_p, seq_lam, delta)
