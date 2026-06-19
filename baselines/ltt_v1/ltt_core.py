@@ -82,10 +82,14 @@ def fixed_sequence_test(
 
     Returns λ̂ (most permissive certified threshold), or None if none certify.
     """
-    for p, lam in zip(pvalues, lambdas):
+    # order lambdas high -> low; reject while p <= delta; stop at first p > delta
+    lam_hat = None
+    for p, lam in sorted(zip(pvalues, lambdas), key=lambda t: -t[1]):
         if p <= delta:
-            return lam   # most permissive certified threshold
-    return None
+            lam_hat = lam      
+        else:
+            break            
+    return lam_hat
 
 
 @dataclass
