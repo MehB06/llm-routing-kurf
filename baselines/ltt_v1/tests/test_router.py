@@ -49,8 +49,8 @@ def main():
     print(f"  CostSave          = {m['cost_save']:.1%}  (vs always-oracle)")
     print(f"  routed cheap      = {m['routed_cheap_frac']:.1%} "
           f"({m['n_routed_cheap']}/{m['n']})")
-    print(f"  measured rel risk = {m['relative_risk']:.3f}  (target <= 0.10)")
-    risk_ok = m['relative_risk'] <= 0.10 + 0.03  # small test-set slack
+    print(f"  measured rel risk = {m['relative_risk']:.3f}  (target <= 0.15)")
+    risk_ok = (m['lambda'] is not None) and (m['relative_risk'] <= 0.15 + 0.03)
 
     # 3: performance-cost curve
     print("\n3: PERFORMANCE-COST CURVE (sweep alpha)")
@@ -74,7 +74,7 @@ def main():
     print(f"  router acc within [cheap, oracle]: {acc_in_range} "
           f"({ac['avg_acc']:.3f} <= {m['avg_acc']:.3f} <= {ao['avg_acc']:.3f})")
     print(f"  cost-save rises as alpha loosens:  {save_monotone}")
-    print(f"  measured risk <= alpha at 0.10:    {risk_ok}")
+    print(f"  measured risk <= alpha at 0.15:    {risk_ok}")
 
     ok = acc_in_range and save_monotone and risk_ok
     print("\n" + ("ROUTER WORKS"

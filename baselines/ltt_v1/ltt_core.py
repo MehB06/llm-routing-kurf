@@ -66,23 +66,24 @@ def fixed_sequence_test(
     """
     Fixed Sequence Testing (FST) for family-wise error control.
 
-    We test candidate thresholds in a FIXED order (here: from most permissive /
-    most-routed-cheap toward most conservative). We walk the sequence and reject
-    "λ is unsafe" as long as p-value <= delta. We STOP at the first λ that fails.
-    The last λ we successfully rejected is λ̂.
+    The caller passes (pvalues, lambdas) ALREADY ORDERED from the safe end
+    (high λ, low risk) toward the permissive end (low λ, high risk). We walk
+    that fixed order and reject the null "λ is unsafe" while p-value <= delta,
+    STOPPING at the first λ we fail to reject. λ̂ is the LAST λ we successfully
+    rejected, the most permissive (most cost-saving) certified threshold.
 
-    Because empirical RISK is monotone decreasing in λ (a higher bar for cheap
-    routing means only confident queries go cheap), the safe region is a suffix:
-    once we reach a λ that certifies, all higher λ are at least as safe.
+    Why this ordering and stopping rule give a valid guarantee: empirical RISK
+    is monotone decreasing in λ (a higher bar for cheap routing means only
+    confident queries go cheap), so the certified region is a contiguous PREFIX
+    of this safe-to-permissive sequence. FST only tests hypothesis k+1 if it
+    rejected 1..k; that prefix structure controls family-wise error with no
+    multiplicity penalty across the ~100 candidate λ.
 
-    NOTE: we do NOT "stop at first failure" walking this direction, because the
-    p-value is not monotone (it loses power as n shrinks at high λ). We scan for
-    the most permissive λ whose p-value clears delta. This respects the
-    monotonicity of the underlying RISK rather than the noisier p-value.
-
-    Returns λ̂ (most permissive certified threshold), or None if none certify.
+    Returns λ̂ (most permissive certified threshold), or None if even the first
+    (safest) hypothesis fails to reject.
     """
-    # order lambdas high -> low; reject while p <= delta; stop at first p > delta
+    # Sequence is pre-ordered safe -> permissive; reject while p <= delta,
+    # break at the first failure; lam_hat is the last successful rejection.
     lam_hat = None
     for p, lam in sorted(zip(pvalues, lambdas), key=lambda t: -t[1]):
         if p <= delta:
@@ -155,11 +156,12 @@ def calibrate_threshold(
     Run LTT calibration: find the most permissive λ̂ whose true relative risk is
     provably <= alpha with probability >= 1 - delta.
 
-    We sweep λ from LOW to HIGH. Low λ => more queries routed cheap => higher
-    risk but more savings. We want the LOWEST λ that's still certified safe, so
-    we order the FST sequence from low λ (most permissive) upward and take the
-    last one that passes, as λ rises, risk falls, so safety is MONOTONE in λ. 
-    FST walks from the most permissive end and stops at the first SAFE one.
+    We evaluate risk and a p-value on a grid of λ in [0, 1]. Risk falls as λ
+    rises (a higher bar routes only confident queries cheap), so safety is
+    MONOTONE in λ. We hand FST the eligible λ (n >= MIN_ROUTED) ordered from the
+    safe end (high λ) toward the permissive end (low λ); it rejects "λ unsafe"
+    along that prefix and stops at the first failure. λ̂ is the lowest (most
+    cost-saving) λ in the certified prefix.
 
     Returns dict with lambda_hat, and diagnostics.
     """
