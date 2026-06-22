@@ -1,0 +1,264 @@
+"""
+LTT calibration 
+
+It is training-free: nothing here is fitted by gradient descent. Instead it runs a 
+hypothesis test on held-out calibration data and certifies a threshold whose true 
+risk is provably ≤ α with probability ≥ 1 − δ.
+
+
+We calibrate a SINGLE SCALAR threshold λ, applied uniformly: a query may be
+routed to model i iff that model's score clears λ. We do NOT (yet) calibrate a
+per-model threshold vector.
+
+Empirical risk is monotone DECREASING in λ. The certified region is therefore a
+contiguous PREFIX of the sequence ordered from the SAFE end (high λ) toward the
+PERMISSIVE end (low λ). FST walks that fixed order, rejecting "λ is unsafe" while
+p ≤ δ and STOPPING at the first failure; λ̂ is the last (most permissive,
+most cost-saving) λ it rejected.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Sequence
+
+import numpy as np
+from scipy import stats
+
+from baselines.ltt_router.protocols import QueryRecord
+from baselines.ltt_router.loss import regret_loss
+
+
+# Minimum number of cheap-routed calibration queries required for a candidate λ
+# to be eligible for testing. Below this, the risk estimate is too noisy and the
+# binomial test too weak to certify anything meaningful.
+MIN_ROUTED_DEFAULT = 30
+
+
+# p-values
+def binomial_pvalue(risk_hat: float, n: int, alpha: float) -> float:
+    """
+    Exact binomial p-value for the null H: true risk ≥ alpha.
+
+    With a 0/1 loss, the number of failures among n routed queries is
+    Binomial(n, true_risk). Under the null (true_risk = alpha), the probability
+    of seeing this few failures or fewer is the binomial CDF at the observed
+    failure count.
+    """
+    n_fail = int(round(risk_hat * n))
+    return float(stats.binom.cdf(n_fail, n, alpha))
+
+
+def hoeffding_bentkus_pvalue(risk_hat: float, n: int, alpha: float) -> float:
+    """
+    Hoeffding-Bentkus p-value for H: true risk ≥ alpha. Distribution-free.
+    Kept as a cross-check against the binomial p-value. Returns min(Hoeffding,
+    Bentkus).
+    """
+    if risk_hat >= alpha:
+        return 1.0
+    h = np.exp(-n * _kl_bernoulli(risk_hat, alpha))
+    b = np.e * stats.binom.cdf(int(np.ceil(n * risk_hat)), n, alpha)
+    return float(min(h, b, 1.0))
+
+
+def _kl_bernoulli(p: float, q: float) -> float:
+    """KL divergence between Bernoulli(p) and Bernoulli(q)."""
+    eps = 1e-12
+    p = min(max(p, eps), 1 - eps)
+    q = min(max(q, eps), 1 - eps)
+    return p * np.log(p / q) + (1 - p) * np.log((1 - p) / (1 - q))
+
+
+# Fixed Sequence Testing
+def fixed_sequence_test(
+    pvalues: Sequence[float],
+    lambdas: Sequence[float],
+    delta: float,
+) -> Optional[float]:
+    """
+    Fixed Sequence Testing (FST) for family-wise error control.
+
+    The caller passes (pvalues, lambdas) and this walks them ordered from the
+    SAFE end (high λ, low risk) toward the PERMISSIVE end (low λ, high risk). We
+    reject the null "λ is unsafe" while p ≤ delta and STOP at the first λ we fail
+    to reject. λ̂ is the LAST λ we successfully rejected; the most permissive
+    (most cost-saving) certified threshold.
+
+    Returns λ̂, or None if even the safest hypothesis fails to reject.
+    """
+    lam_hat: Optional[float] = None
+    for p, lam in sorted(zip(pvalues, lambdas), key=lambda t: -t[1]):  # high → low
+        if p <= delta:
+            lam_hat = lam
+        else:
+            break
+    return lam_hat
+
+
+# Decision function: how a candidate λ turns one query into a routing choice
+DecisionFn = Callable[[QueryRecord, float], int]
+
+
+def cheapest_safe_decision_factory(
+    cost_order: np.ndarray,
+    fallback_idx: int,
+) -> DecisionFn:
+    """
+    Build the cost-ordered cheapest-safe decision rule used for calibration.
+
+    cost_order:
+        int[K] model indices sorted cheapest → most-expensive. 
+        These are the models the rule is allowed to pick.
+    fallback_idx:
+        Index of the most capable model, chosen when no candidate clears λ. Must
+        be an index that is (almost) always evaluated, so the choice is scorable.
+
+    Returns
+    DecisionFn: a function mapping (query, lambda) -> chosen_idx: the first model in cost_order whose
+        score ≥ λ AND which was evaluated on this query; else fallback_idx.
+    """
+    cost_order = np.asarray(cost_order, dtype=int)
+
+    def decide(q: QueryRecord, lam: float) -> int:
+        for idx in cost_order:
+            if q.evaluated[idx] and q.scores[idx] >= lam:
+                return int(idx)
+        return int(fallback_idx)
+
+    return decide
+
+
+# Loss table over the λ grid
+def build_loss_table(
+    queries: List[QueryRecord],
+    lambdas: np.ndarray,
+    decision_fn: DecisionFn,
+    fallback_idx: int,
+):
+    """
+    Build per-λ empirical risk and the routed count, for the rule.
+
+    For each λ and each query we apply decision_fn(query, λ) to get the chosen
+    model, then score it with the regret loss. "Routed" here means the rule actively chose a 
+    cheaper model rather than deferring to the safe fallback. Risk is the mean regret AMONG those 
+    actively routed queries, which is the quantity the guarantee bounds.
+
+    Returns
+    risks : float[L]   mean regret among actively-routed queries, per λ
+    ns    : int[L]     number of actively-routed queries, per λ
+    """
+    L = len(lambdas)
+    risks = np.zeros(L)
+    ns = np.zeros(L, dtype=int)
+
+    for i, lam in enumerate(lambdas):
+        losses = []
+        for q in queries:
+            chosen = decision_fn(q, lam)
+            if chosen == fallback_idx:
+                # Deferred to the safe fallback: by construction loss 0, and it
+                # does not count toward the certified risk denominator, so skip it entirely.
+                continue
+            losses.append(regret_loss(chosen, q.correct, q.evaluated))
+        ns[i] = len(losses)
+        risks[i] = float(np.mean(losses)) if losses else 0.0
+
+    return risks, ns
+
+
+# Top-level calibration
+@dataclass
+class CalibrationResult:
+    """Outcome of one LTT calibration run, plus diagnostics for plotting."""
+    lambda_hat: Optional[float]      # certified threshold, or None if nothing certifies
+    alpha: float
+    delta: float
+    lambdas: np.ndarray
+    risks: np.ndarray
+    ns: np.ndarray
+    pvalues: np.ndarray
+    pvalue_method: str
+    min_routed: int
+    certified: bool = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.certified = self.lambda_hat is not None
+
+
+def calibrate_threshold(
+    queries: List[QueryRecord],
+    alpha: float,
+    decision_fn: DecisionFn,
+    fallback_idx: int,
+    delta: float = 0.10,
+    n_lambdas: int = 100,
+    pvalue: str = "binomial",
+    min_routed: int = MIN_ROUTED_DEFAULT,
+) -> CalibrationResult:
+    """
+    Run LTT calibration: find the most permissive λ̂ whose true regret under the
+    routing rule is provably ≤ alpha with probability ≥ 1 − delta.
+
+    queries:
+        Calibration QueryRecord's. MUST be disjoint from the scorer's training
+        data and from the test set, or the guarantee breaks (the three-way split
+        in the adaptor enforces this).
+    alpha:
+        Risk target. regret ≤ alpha.
+    decision_fn:
+        The routing rule to certify.
+    fallback_idx:
+        The safe-default model index (queries routed here are excluded from the
+        certified risk denominator).
+    delta:
+        Failure probability of the guarantee.
+    n_lambdas:
+        Resolution of the λ grid over [0, 1].
+    pvalue:
+        "binomial" (default, UMP for 0/1 loss) or "hb" (distribution-free check).
+    min_routed:
+        Minimum actively-routed count for a λ to be ELIGIBLE for FST. Ineligible
+        λ are FILTERED OUT of the sequence.
+
+    Returns
+    CalibrationResult
+    """
+    lambdas = np.linspace(0.0, 1.0, n_lambdas)
+    risks, ns = build_loss_table(queries, lambdas, decision_fn, fallback_idx)
+
+    # p-value per λ for the null.
+    pvals = np.ones(len(lambdas))
+    for i in range(len(lambdas)):
+        if ns[i] == 0:
+            pvals[i] = 1.0
+            continue
+        if pvalue == "binomial":
+            pvals[i] = binomial_pvalue(risks[i], ns[i], alpha)
+        else:
+            pvals[i] = hoeffding_bentkus_pvalue(risks[i], ns[i], alpha)
+
+    # Build the fixed sequence from the SAFE end (high λ) toward permissive (low
+    # λ), over ELIGIBLE thresholds only (n ≥ min_routed).
+    order = np.argsort(lambdas)[::-1]  # high → low
+    seq_p: List[float] = []
+    seq_lam: List[float] = []
+    for i in order:
+        if ns[i] < min_routed:
+            continue
+        seq_p.append(float(pvals[i]))
+        seq_lam.append(float(lambdas[i]))
+
+    lam_hat = fixed_sequence_test(seq_p, seq_lam, delta)
+
+    return CalibrationResult(
+        lambda_hat=lam_hat,
+        alpha=alpha,
+        delta=delta,
+        lambdas=lambdas,
+        risks=risks,
+        ns=ns,
+        pvalues=pvals,
+        pvalue_method=pvalue,
+        min_routed=min_routed,
+    )
