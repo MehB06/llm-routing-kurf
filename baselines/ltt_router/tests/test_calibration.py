@@ -182,3 +182,65 @@ def test_calibration_result_diagnostics_shapes():
     assert res.risks.shape == (100,)
     assert res.ns.shape == (100,)
     assert res.pvalues.shape == (100,)
+
+# 4. Regression: 
+def _graded_score_queries(n, cheap_acc, oracle_acc, seed=0):
+    # N=2 queries with a GRADED cheap score (correlated with correctness + noise),
+    # so routed count varies smoothly with λ, the real-data shape. At high λ only
+    # a few route cheap; at low λ almost all do. Reproduces the bug
+    # where a noisy small-n p-value at high λ halts FST and certifies a useless λ̂.
+    rng = np.random.default_rng(seed)
+    qs = []
+    for i in range(n):
+        cheap_c = int(rng.random() < cheap_acc)
+        oracle_c = int(rng.random() < oracle_acc)
+        s_cheap = float(np.clip(rng.normal(0.65 if cheap_c else 0.40, 0.18), 0, 1))
+        qs.append(QueryRecord(
+            scores=np.array([s_cheap, 0.0]),
+            correct=np.array([cheap_c, oracle_c]),
+            cost=np.array([0.1, 2.0]),
+            evaluated=np.array([True, True]),
+            prompt=f"q{i}",
+        ))
+    return qs
+
+
+def test_power_floor_prevents_starved_lambda_hat():
+    # With the default floor, calibration must NOT certify a λ̂ that
+    # routes only a tiny fraction; it should route a large majority while
+    # keeping realized risk ≤ α, the behaviour the real benchmark run needs.
+    queries = _graded_score_queries(n=2000, cheap_acc=0.78, oracle_acc=0.96, seed=0)
+    decide = cheapest_safe_decision_factory(cost_order=np.array([0]), fallback_idx=1)
+    res = calibrate_threshold(queries, alpha=0.15, decision_fn=decide, fallback_idx=1)
+
+    assert res.certified, "should certify a usable threshold with adequate power"
+    idx = int(np.argmin(np.abs(res.lambdas - res.lambda_hat)))
+    routed_frac = res.ns[idx] / len(queries)
+    assert routed_frac > 0.5, f"λ̂ routes only {routed_frac:.1%} -- power-starved"
+    assert res.risks[idx] <= res.alpha + 1e-9
+
+
+def test_low_floor_is_unreliable_across_seeds():
+    # The OLD low floor (30) is unreliable across seeds it sometimes
+    # certifies a low λ̂ (or nothing) because a noisy small-n p-value at high λ
+    # halts FST. The default floor is reliably useful on EVERY seed; the low floor
+    # is no better at its weakest seed (and usually worse).
+    decide = cheapest_safe_decision_factory(cost_order=np.array([0]), fallback_idx=1)
+
+    def routed_frac_at(res, n):
+        if not res.certified:
+            return 0.0
+        idx = int(np.argmin(np.abs(res.lambdas - res.lambda_hat)))
+        return res.ns[idx] / n
+
+    default_fracs, low_fracs = [], []
+    for seed in range(6):
+        qs = _graded_score_queries(n=2000, cheap_acc=0.78, oracle_acc=0.96, seed=seed)
+        default_fracs.append(routed_frac_at(
+            calibrate_threshold(qs, alpha=0.15, decision_fn=decide, fallback_idx=1), 2000))
+        low_fracs.append(routed_frac_at(
+            calibrate_threshold(qs, alpha=0.15, decision_fn=decide, fallback_idx=1,
+                                min_routed=30), 2000))
+
+    assert min(default_fracs) > 0.5, f"default floor unreliable: {default_fracs}"
+    assert min(low_fracs) <= min(default_fracs)

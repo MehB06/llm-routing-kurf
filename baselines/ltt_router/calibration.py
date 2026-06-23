@@ -30,9 +30,10 @@ from baselines.ltt_router.loss import regret_loss
 
 
 # Minimum number of cheap-routed calibration queries required for a candidate λ
-# to be eligible for testing. Below this, the risk estimate is too noisy and the
-# binomial test too weak to certify anything meaningful.
-MIN_ROUTED_DEFAULT = 30
+# to be eligible for testing. Below this the binomial test is underpowered, and a
+# noisy small-n p-value at the SAFE (high-λ) end can break the FST chain early
+# (FST stops at first failure) -> certifies nothing, or a λ̂ that routes ~2%.
+MIN_ROUTED_DEFAULT = 100
 
 
 # p-values
