@@ -25,6 +25,11 @@ from baselines.ltt_router.routing import (
     Router,
     RouterPlan,
 )
+from baselines.ltt_router.routers import (
+    EmbeddingLRRouter,
+    build_embedding_lr_router,
+    RandomRouter,
+)
  
 __all__ = [
     # contracts
@@ -50,4 +55,8 @@ __all__ = [
     "model_accuracies",
     "Router",
     "RouterPlan",
+    # concrete routers
+    "EmbeddingLRRouter",
+    "build_embedding_lr_router",
+    "RandomRouter",
 ]
