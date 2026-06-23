@@ -17,7 +17,15 @@ from baselines.ltt_router.calibration import (
     calibrate_threshold,
     CalibrationResult,
 )
-
+from baselines.ltt_router.routing import (
+    pareto_survivors,
+    cost_ordered,
+    most_capable,
+    model_accuracies,
+    Router,
+    RouterPlan,
+)
+ 
 __all__ = [
     # contracts
     "RoutingFunction",
@@ -35,4 +43,11 @@ __all__ = [
     "cheapest_safe_decision_factory",
     "calibrate_threshold",
     "CalibrationResult",
+    # routing
+    "pareto_survivors",
+    "cost_ordered",
+    "most_capable",
+    "model_accuracies",
+    "Router",
+    "RouterPlan",
 ]
