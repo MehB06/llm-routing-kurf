@@ -186,6 +186,7 @@ class Router:
             n_lambdas=n_lambdas,
             pvalue=pvalue,
             min_routed=min_routed,
+            cost_order=order,
         )
 
         self.plan = RouterPlan(
@@ -207,10 +208,14 @@ class Router:
         """
         if self.plan is None:
             raise RuntimeError("Router.fit must be called before route")
+        decide = cheapest_safe_decision_factory(self.plan.cost_order, self.plan.fallback_idx)
         lam = self.plan.lambda_hat
         if lam is None:
-            return self.plan.fallback_idx
-        decide = cheapest_safe_decision_factory(self.plan.cost_order, self.plan.fallback_idx)
+            # Nothing certified: use λ = +inf so no model clears it and the rule's
+            # robust fallback chain picks the most-capable EVALUATED model. This
+            # also fixes the sparse-data case where the designated fallback has no
+            # row for this query.
+            lam = float("inf")
         return decide(query, lam)
 
     def route_batch(self, queries: List[QueryRecord]) -> np.ndarray:

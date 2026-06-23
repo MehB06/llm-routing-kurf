@@ -33,3 +33,6 @@ pymysql>=1.0.0
 
 # For testing 
 pytest>=7.0.0
+
+# For plotting
+matplotlib>=3.5.0

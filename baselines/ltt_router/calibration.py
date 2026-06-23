@@ -112,12 +112,17 @@ def cheapest_safe_decision_factory(
         int[K] model indices sorted cheapest → most-expensive. 
         These are the models the rule is allowed to pick.
     fallback_idx:
-        Index of the most capable model, chosen when no candidate clears λ. Must
-        be an index that is (almost) always evaluated, so the choice is scorable.
+        Index of the most capable survivor, used when no candidate clears λ.
 
     Returns
-    DecisionFn: a function mapping (query, lambda) -> chosen_idx: the first model in cost_order whose
-        score ≥ λ AND which was evaluated on this query; else fallback_idx.
+    DecisionFn: (query, lambda) -> chosen_idx. The first model in cost_order whose
+        score ≥ λ AND which was evaluated on this query; else the fallback.
+
+    Sparse-data fallback: real benchmark data is NOT dense the designated
+    fallback may have no row for a given query. If so we cannot route there (its
+    outcome is unknown and regret would be unscorable). We then fall back to the
+    most-capable model that WAS evaluated, walking cost_order from the most expensive end.
+    QueryRecord guarantees at least one evaluated model, so this always resolves.
     """
     cost_order = np.asarray(cost_order, dtype=int)
 
@@ -125,9 +130,31 @@ def cheapest_safe_decision_factory(
         for idx in cost_order:
             if q.evaluated[idx] and q.scores[idx] >= lam:
                 return int(idx)
-        return int(fallback_idx)
+        # No candidate cleared λ. Prefer the designated fallback if it was
+        # evaluated; otherwise the most-capable evaluated survivor (most expensive -> cheap),
+        # and finally any evaluated model at all.
+        if q.evaluated[fallback_idx]:
+            return int(fallback_idx)
+        for idx in cost_order[::-1]:
+            if q.evaluated[idx]:
+                return int(idx)
+        return int(np.flatnonzero(q.evaluated)[0])
 
     return decide
+
+
+def is_active_route(q: QueryRecord, lam: float, cost_order: np.ndarray) -> bool:
+    """
+    True iff some model actually CLEARED λ for this query (an active cheap route),
+    vs a deferral to the capable fallback. Used for the risk denominator: the
+    guarantee bounds regret AMONG actively-routed queries. This is robust to
+    sparse data.
+    """
+    cost_order = np.asarray(cost_order, dtype=int)
+    for idx in cost_order:
+        if q.evaluated[idx] and q.scores[idx] >= lam:
+            return True
+    return False
 
 
 # Loss table over the λ grid
@@ -136,14 +163,20 @@ def build_loss_table(
     lambdas: np.ndarray,
     decision_fn: DecisionFn,
     fallback_idx: int,
+    cost_order: Optional[np.ndarray] = None,
 ):
     """
     Build per-λ empirical risk and the routed count, for the rule.
 
     For each λ and each query we apply decision_fn(query, λ) to get the chosen
-    model, then score it with the regret loss. "Routed" here means the rule actively chose a 
-    cheaper model rather than deferring to the safe fallback. Risk is the mean regret AMONG those 
-    actively routed queries, which is the quantity the guarantee bounds.
+    model, then score it with the regret loss. "Routed" means the rule actively
+    chose a cheaper model (something CLEARED λ) rather than deferring to the
+    capable fallback. Risk is the mean regret AMONG those actively routed queries,
+    which is the quantity the guarantee bounds.
+
+    cost_order is used to classify active-route vs deferral robustly (via
+    is_active_route). If omitted we fall back to the chosen==fallback_idx test
+    (valid only on dense data where the fallback is always evaluated).
 
     Returns
     risks : float[L]   mean regret among actively-routed queries, per λ
@@ -156,11 +189,15 @@ def build_loss_table(
     for i, lam in enumerate(lambdas):
         losses = []
         for q in queries:
-            chosen = decision_fn(q, lam)
-            if chosen == fallback_idx:
-                # Deferred to the safe fallback: by construction loss 0, and it
-                # does not count toward the certified risk denominator, so skip it entirely.
+            if cost_order is not None:
+                active = is_active_route(q, lam, cost_order)
+            else:
+                active = decision_fn(q, lam) != fallback_idx
+            if not active:
+                # Deferred to the capable fallback: loss 0 by construction, and it
+                # does NOT count toward the certified risk denominator.
                 continue
+            chosen = decision_fn(q, lam)
             losses.append(regret_loss(chosen, q.correct, q.evaluated))
         ns[i] = len(losses)
         risks[i] = float(np.mean(losses)) if losses else 0.0
@@ -196,6 +233,7 @@ def calibrate_threshold(
     n_lambdas: int = 100,
     pvalue: str = "binomial",
     min_routed: int = MIN_ROUTED_DEFAULT,
+    cost_order: Optional[np.ndarray] = None,
 ) -> CalibrationResult:
     """
     Run LTT calibration: find the most permissive λ̂ whose true regret under the
@@ -226,7 +264,7 @@ def calibrate_threshold(
     CalibrationResult
     """
     lambdas = np.linspace(0.0, 1.0, n_lambdas)
-    risks, ns = build_loss_table(queries, lambdas, decision_fn, fallback_idx)
+    risks, ns = build_loss_table(queries, lambdas, decision_fn, fallback_idx, cost_order)
 
     # p-value per λ for the null.
     pvals = np.ones(len(lambdas))

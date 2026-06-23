@@ -180,3 +180,51 @@ def test_pareto_flag_changes_survivor_set():
     plan_budget = router.fit(qs, alpha=0.2, apply_pareto=False)
     assert 1 not in plan_pareto.survivors.tolist()       # dominated dropped
     assert 1 in plan_budget.survivors.tolist()           # kept without Pareto
+
+def test_route_handles_unevaluated_fallback():
+    # 3 models; fallback is the most expensive (idx 2). On a query where idx2 has NO row,
+    # and nothing clears λ, the rule must pick the most-capable EVALUATED model
+    # (idx 1 here), never return the unevaluated fallback (which would be unscorable).
+    from baselines.ltt_router.calibration import cheapest_safe_decision_factory
+    decide = cheapest_safe_decision_factory(cost_order=np.array([0, 1, 2]), fallback_idx=2)
+    q = QueryRecord(
+        scores=np.array([0.1, 0.1, 0.1]),       # nothing clears a high λ
+        correct=np.array([0, 1, 0]),
+        cost=np.array([0.1, 0.5, 2.0]),
+        evaluated=np.array([True, True, False]),  # fallback idx2 NOT evaluated
+    )
+    chosen = decide(q, lam=0.9)
+    assert q.evaluated[chosen], "must choose an evaluated model"
+    assert chosen == 1, "should pick the most-capable evaluated model in cost order"
+
+
+def test_router_route_never_returns_unevaluated_model():
+    # End-to-end: even when the plan's fallback is unevaluated on a test query,
+    # Router.route returns an evaluated index (regret would be unscorable otherwise).
+    from baselines.ltt_router.protocols import ModelSpec
+
+    class ScriptedScorer:
+        def __init__(self, models): self._models = models
+        @property
+        def models(self): return self._models
+        def score(self, prompt, dataset_id=""): return np.zeros(len(self._models))
+
+    models = [ModelSpec("cheap", 0.1, 0), ModelSpec("mid", 0.5, 1), ModelSpec("oracle", 2.0, 2)]
+    rng = np.random.default_rng(0)
+    calib = []
+    for i in range(400):
+        calib.append(QueryRecord(
+            scores=np.array([0.9, 0.5, 0.0]),
+            correct=np.array([int(rng.random() < 0.8), int(rng.random() < 0.85),
+                              int(rng.random() < 0.95)]),
+            cost=np.array([0.1, 0.5, 2.0]),
+            evaluated=np.array([True, True, True]),
+            prompt=f"q{i}",
+        ))
+    router = Router(ScriptedScorer(models))
+    router.fit(calib, alpha=0.25)
+    # a test query where the oracle (likely fallback) is NOT evaluated
+    q = QueryRecord(np.array([0.1, 0.1, 0.1]), np.array([1, 1, 0]),
+                    np.array([0.1, 0.5, 2.0]), np.array([True, True, False]))
+    chosen = router.route(q)
+    assert q.evaluated[chosen]
