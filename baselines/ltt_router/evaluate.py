@@ -110,7 +110,8 @@ class EvalResult:
     delta: float
     lambda_hat: Optional[float]
     certified: bool
-    realized_risk: float
+    realized_risk: float          # conditional: regret among actively-routed (matches λ̂)
+    realized_risk_all: float      # unconditional: regret over all queries (diagnostic)
     routed_fraction: float
     per_model_traffic: Dict[str, float]
     survivors: List[str]
@@ -142,19 +143,31 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
     plan = result.plan
     names = [m.name for m in models]
 
-    # Chosen-model accuracy + cost per query.
-    accs, costs, regrets = [], [], []
+    # Chosen-model accuracy + cost per query, plus per-query active-route status.
+    # The GUARANTEE is conditional: regret ≤ α AMONG actively-routed queries
+    # So realized_risk must use the SAME denominator.
+    from baselines.ltt_router.calibration import is_active_route
+    lam = plan.lambda_hat if plan.lambda_hat is not None else float("inf")
+
+    accs, costs = [], []
+    routed_regrets, all_regrets = [], []
     traffic = np.zeros(n_models)
     for q, c in zip(queries, chosen):
         # chosen model is guaranteed evaluated (router only picks evaluated/fallback)
         accs.append(int(q.correct[c] == 1))
         costs.append(float(q.cost[c]))
-        regrets.append(regret_loss(int(c), q.correct, q.evaluated))
+        r = regret_loss(int(c), q.correct, q.evaluated)
+        all_regrets.append(r)
+        if is_active_route(q, lam, plan.cost_order):
+            routed_regrets.append(r)        # only these are under the guarantee
         traffic[c] += 1
 
     avg_acc = float(np.mean(accs)) if accs else 0.0
     avg_cost = float(np.mean(costs)) if costs else 0.0
-    realized_risk = float(np.mean(regrets)) if regrets else 0.0
+    # realized_risk = conditional regret among actively-routed queries (matches λ̂).
+    realized_risk = float(np.mean(routed_regrets)) if routed_regrets else 0.0
+    # unconditional regret over ALL queries (incl. deferrals) — diagnostic only.
+    realized_risk_all = float(np.mean(all_regrets)) if all_regrets else 0.0
 
     fb = plan.fallback_idx if fallback_for_savings is None else fallback_for_savings
     all_fallback = fixed_model_row(queries, fb)
@@ -162,10 +175,6 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
 
     traffic_frac = traffic / max(1, len(queries))
     routing_dist = {names[i]: float(traffic_frac[i]) for i in range(n_models) if traffic_frac[i] > 0}
-    # "Routed" = the rule actively chose a cheaper model (something cleared λ̂),
-    # not a deferral. Robust to sparse data where the fallback may differ per query.
-    from baselines.ltt_router.calibration import is_active_route
-    lam = plan.lambda_hat if plan.lambda_hat is not None else float("inf")
     routed_fraction = (
         float(np.mean([is_active_route(q, lam, plan.cost_order) for q in queries]))
         if queries else 0.0
@@ -193,6 +202,7 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
         lambda_hat=plan.lambda_hat,
         certified=plan.certified,
         realized_risk=realized_risk,
+        realized_risk_all=realized_risk_all,
         routed_fraction=routed_fraction,
         per_model_traffic=routing_dist,
         survivors=[names[i] for i in plan.survivors],
@@ -246,3 +256,23 @@ def load_baseline_results(repo_root: str = ".") -> Dict[str, Dict[str, float]]:
         if accs:
             out["RouteLLM"] = {"accuracy": float(np.nanmean(accs)), "cost": float(np.nanmean(costs))}
     return out
+
+# Markdown results table
+def alpha_sweep_markdown(results: list) -> str:
+    """
+    Build the README's α-sweep table from a list of AdaptorResults (one per α).
+    realized_risk here is the CONDITIONAL (certified) risk, so the table tests the
+    guarantee like-for-like.
+    """
+    header = ("| α    | certified | λ̂     | routed % | realized risk | cost saved |\n"
+              "|------|-----------|-------|----------|---------------|------------|")
+    rows = [header]
+    for r in results:
+        ev = evaluate(r)
+        lam = f"{ev.lambda_hat:.3f}" if ev.lambda_hat is not None else "—"
+        rows.append(
+            f"| {ev.alpha:<4} | {str(ev.certified):<9} | {lam:<5} | "
+            f"{ev.routed_fraction*100:6.1f}  | {ev.realized_risk:6.3f}        | "
+            f"{ev.cost_saved*100:6.1f}%    |"
+        )
+    return "\n".join(rows)

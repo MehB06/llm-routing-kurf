@@ -116,17 +116,28 @@ def test_evaluate_produces_both_blocks():
 
 
 def test_realized_risk_matches_manual():
-    # Construct a result where we know the regret exactly.
+    # realized_risk is CONDITIONAL: regret among actively-routed queries (matches
+    # the certified bound). realized_risk_all is the unconditional diagnostic.
+    # Recompute both independently and check evaluate agrees.
     recs = make_records(300, seed=2)
     result = LTTAdaptor("UNUSED", seed=42).run(alpha=0.30, embed_fn=stub_embed_fn, records=recs)
     ev = evaluate(result)
-    # recompute regret independently
     from baselines.ltt_router.loss import regret_loss
-    manual = np.mean([
-        regret_loss(int(c), q.correct, q.evaluated)
-        for q, c in zip(result.test_queries, result.chosen_indices)
-    ])
-    assert ev.realized_risk == pytest.approx(manual)
+    from baselines.ltt_router.calibration import is_active_route
+    plan = result.plan
+    lam = plan.lambda_hat if plan.lambda_hat is not None else float("inf")
+
+    all_r, routed_r = [], []
+    for q, c in zip(result.test_queries, result.chosen_indices):
+        r = regret_loss(int(c), q.correct, q.evaluated)
+        all_r.append(r)
+        if is_active_route(q, lam, plan.cost_order):
+            routed_r.append(r)
+    manual_cond = np.mean(routed_r) if routed_r else 0.0
+    manual_all = np.mean(all_r) if all_r else 0.0
+
+    assert ev.realized_risk == pytest.approx(manual_cond)
+    assert ev.realized_risk_all == pytest.approx(manual_all)
 
 
 # 3. experiment harness + figures
@@ -162,3 +173,62 @@ def test_figures_are_written(tmp_path):
     ours = evaluate(make_result(0, True))
     p3 = exp.plot_benchmark_comparison(ours, repo_root=".", outdir=str(tmp_path))
     assert os.path.exists(p3)
+
+# Regression: realized_risk must match the CERTIFIED (conditional) denominator.
+def test_realized_risk_is_conditional_on_routed():
+    import numpy as np
+    from baselines.ltt_router.protocols import QueryRecord, ModelSpec
+    from baselines.ltt_router.routing import Router
+
+    class ScriptedScorer:
+        def __init__(self, models): self._models = models
+        @property
+        def models(self): return self._models
+        def score(self, prompt, dataset_id=""): return np.zeros(len(self._models))
+
+    models = [ModelSpec("cheap", 0.1, 0), ModelSpec("oracle", 2.0, 1)]
+    rng = np.random.default_rng(0)
+    # Calib: cheap good only on high-score queries -> certifies a mid λ̂.
+    calib = []
+    for i in range(800):
+        s = rng.random()
+        cheap_ok = rng.random() < (0.95 if s > 0.6 else 0.5)
+        calib.append(QueryRecord(
+            scores=np.array([s, 0.0]),
+            correct=np.array([int(cheap_ok), int(rng.random() < 0.95)]),
+            cost=np.array([0.1, 2.0]),
+            evaluated=np.array([True, True]),
+            prompt=f"c{i}",
+        ))
+    router = Router(ScriptedScorer(models))
+    plan = router.fit(calib, alpha=0.15)
+
+    # Build a fake AdaptorResult over a TEST set with many deferrals (low scores),
+    # where deferred queries have high regret but should NOT count.
+    test = []
+    for i in range(800):
+        s = rng.random() * 0.4          
+        test.append(QueryRecord(
+            scores=np.array([s, 0.0]),
+            correct=np.array([int(rng.random() < 0.5), int(rng.random() < 0.95)]),
+            cost=np.array([0.1, 2.0]),
+            evaluated=np.array([True, True]),
+            prompt=f"t{i}",
+        ))
+    chosen = router.route_batch(test)
+
+    class FakeResult:
+        pass
+    r = FakeResult()
+    r.plan = plan; r.test_queries = test; r.chosen_indices = chosen
+    r.models = models; r.alpha = 0.15; r.delta = 0.10
+    r.apply_pareto = True; r.seed = 0
+
+    from baselines.ltt_router.evaluate import evaluate
+    ev = evaluate(r)
+    if ev.certified and ev.routed_fraction > 0:
+        # the certified (conditional) risk must respect the bound
+        assert ev.realized_risk <= ev.alpha + 0.05, \
+            f"conditional risk {ev.realized_risk} should be near ≤ α={ev.alpha}"
+    # the diagnostic over ALL queries is a separate number, present and valid
+    assert 0.0 <= ev.realized_risk_all <= 1.0

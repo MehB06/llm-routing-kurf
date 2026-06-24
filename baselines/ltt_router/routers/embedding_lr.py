@@ -58,6 +58,42 @@ def default_embed_fn(prompts: List[str], show_progress: bool = False) -> np.ndar
         _EMBED_MODEL.encode(prompts, show_progress_bar=show_progress, batch_size=64)
     )
 
+
+class CachingEmbedder:
+    """
+    Embeds each UNIQUE prompt exactly once and caches the vector, so repeated
+    calls (across trials, α-values, Pareto/budget runs) are dictionary lookups
+    instead of re-running the transformer.
+    """
+
+    def __init__(self, base_embed_fn=None, dim: Optional[int] = None):
+        self._base = base_embed_fn or default_embed_fn
+        self._cache: dict = {}
+        self._dim = dim
+
+    def precompute(self, prompts: List[str], show_progress: bool = True) -> None:
+        """Embed all unseen unique prompts in one batched pass (fills the cache)."""
+        unseen = list({p for p in prompts if p not in self._cache})
+        if not unseen:
+            return
+        vecs = np.asarray(self._base(unseen))
+        if self._dim is None:
+            self._dim = vecs.shape[1]
+        for p, v in zip(unseen, vecs):
+            self._cache[p] = v
+
+    def __call__(self, prompts: List[str]) -> np.ndarray:
+        # Embed any prompts not yet cached (single batched call), then look up all.
+        missing = [p for p in prompts if p not in self._cache]
+        if missing:
+            uniq = list(dict.fromkeys(missing))   # de-dup, preserve order
+            vecs = np.asarray(self._base(uniq))
+            if self._dim is None:
+                self._dim = vecs.shape[1]
+            for p, v in zip(uniq, vecs):
+                self._cache[p] = v
+        return np.asarray([self._cache[p] for p in prompts])
+
 # Building the per-model training data
 def _per_model_examples(train_records: Sequence, model_name: str):
     """

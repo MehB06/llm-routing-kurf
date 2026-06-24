@@ -30,7 +30,7 @@ import numpy as np
 from baselines.ltt_router.evaluate import evaluate, EvalResult, load_baseline_results
 
 
-DEFAULT_OUTDIR = "experiments"
+DEFAULT_OUTDIR = "baselines/ltt_router/experiments"
 
 
 def _ensure_outdir(outdir: str) -> str:
@@ -51,13 +51,21 @@ def run_repeated_trials(
     make_result: Callable[[int, bool], object],
     n_trials: int = 200,
     apply_pareto: bool = True,
+    progress: bool = True,
+    label: str = "",
 ) -> List[TrialOutcome]:
     """
     make_result(seed, apply_pareto) -> AdaptorResult. We call it n_trials times
     with different seeds, evaluate each, and collect the realized-risk outcomes.
     Kept abstract so the caller wires in either synthetic or real data.
+
+    progress: print a per-seed line with elapsed time + ETA, so a long run shows
+    how far along it is instead of hanging silently.
     """
+    import time
+
     outcomes = []
+    t0 = time.time()
     for t in range(n_trials):
         result = make_result(t, apply_pareto)
         ev = evaluate(result)
@@ -67,6 +75,17 @@ def run_repeated_trials(
             certified=ev.certified,
             cost_saved=ev.cost_saved,
         ))
+        if progress:
+            done = t + 1
+            elapsed = time.time() - t0
+            rate = elapsed / done
+            eta = rate * (n_trials - done)
+            print(
+                f"    [{label}] seed {done:>3}/{n_trials}  "
+                f"risk={ev.realized_risk:.3f} routed={ev.routed_fraction:.0%} "
+                f"cert={ev.certified}  | {elapsed:5.1f}s elapsed, ETA {eta:5.1f}s",
+                flush=True,
+            )
     return outcomes
 
 
@@ -219,6 +238,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     args = parser.parse_args(argv)
 
     from baselines.adaptors.ltt_adaptor import LTTAdaptor
+    from baselines.ltt_router.routers.embedding_lr import CachingEmbedder
 
     subset = [m.strip() for m in args.models.split(",") if m.strip()] or None
 
@@ -228,28 +248,38 @@ def main(argv: Optional[List[str]] = None) -> None:
     if subset:
         records = [r for r in records if r.model_name in subset]
 
+    # Embed every unique prompt ONCE and reuse across all
+    # trials/α-values/Pareto-budget runs.
+    print("[0/3] precomputing prompt embeddings (one pass) ...", flush=True)
+    import time as _t
+    _e0 = _t.time()
+    embedder = CachingEmbedder()
+    embedder.precompute(list({r.prompt for r in records}))
+    print(f"      cached {len(embedder._cache)} unique prompts in {_t.time()-_e0:.1f}s",
+          flush=True)
+
     def make_result(seed: int, apply_pareto: bool):
         ad = LTTAdaptor(config_path=args.config, seed=seed)
         return ad.run(alpha=args.alpha, delta=args.delta,
-                      apply_pareto=apply_pareto, records=records)
+                      apply_pareto=apply_pareto, records=records, embed_fn=embedder)
 
-    print(f"[1/3] repeated trials (n={args.n_trials}) ...")
-    out_par = run_repeated_trials(make_result, args.n_trials, apply_pareto=True)
-    out_bud = run_repeated_trials(make_result, args.n_trials, apply_pareto=False)
+    print(f"[1/3] repeated trials (n={args.n_trials}) ...", flush=True)
+    out_par = run_repeated_trials(make_result, args.n_trials, apply_pareto=True, label="Pareto")
+    out_bud = run_repeated_trials(make_result, args.n_trials, apply_pareto=False, label="budget")
     p1 = plot_guarantee_histogram(out_par, out_bud, args.alpha, args.delta, args.outdir)
     print(f"      -> {p1}  (+Pareto viol {violation_rate(out_par, args.alpha):.1%}, "
           f"budget viol {violation_rate(out_bud, args.alpha):.1%})")
 
-    print("[2/3] alpha-sweep ...")
+    print("[2/3] alpha-sweep ...", flush=True)
     alphas = [float(a) for a in args.alphas.split(",")]
     def make_at_alpha(a):
         ad = LTTAdaptor(config_path=args.config, seed=0)
-        return ad.run(alpha=a, delta=args.delta, records=records)
+        return ad.run(alpha=a, delta=args.delta, records=records, embed_fn=embedder)
     evals = run_alpha_sweep(make_at_alpha, alphas)
     p2 = plot_alpha_sweep(evals, alphas, args.outdir)
     print(f"      -> {p2}")
 
-    print("[3/3] benchmark comparison ...")
+    print("[3/3] benchmark comparison ...", flush=True)
     ours = evaluate(make_result(0, True))
     p3 = plot_benchmark_comparison(ours, repo_root=".", outdir=args.outdir)
     print(f"      -> {p3}")

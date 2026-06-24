@@ -160,3 +160,43 @@ def test_single_class_training_does_not_crash():
     s = router.score("new?")
     assert s.shape == (1,)
     assert 0.0 <= s[0] <= 1.0
+
+# CachingEmbedder: embed each unique prompt once, reuse across calls
+def test_caching_embedder_calls_base_once_per_unique_prompt():
+    from baselines.ltt_router.routers.embedding_lr import CachingEmbedder
+    calls = {"n": 0, "prompts": []}
+
+    def counting_base(prompts):
+        calls["n"] += 1
+        calls["prompts"].extend(prompts)
+        return np.asarray([[len(p), p.count("?")] for p in prompts], float)
+
+    emb = CachingEmbedder(base_embed_fn=counting_base)
+    # First call embeds the 3 unique prompts.
+    a = emb(["x?", "yy", "x?"])
+    # Second call with overlap: only "zzz" is new.
+    b = emb(["yy", "zzz", "x?"])
+    assert a.shape == (3, 2)
+    assert b.shape == (3, 2)
+
+    assert len(set(calls["prompts"])) == 3
+    assert "zzz" in calls["prompts"]
+
+    assert np.allclose(a[0], a[2])
+    assert np.allclose(a[0], b[2])
+
+
+def test_caching_embedder_precompute_fills_cache():
+    from baselines.ltt_router.routers.embedding_lr import CachingEmbedder
+    calls = {"n": 0}
+
+    def counting_base(prompts):
+        calls["n"] += 1
+        return np.asarray([[len(p)] for p in prompts], float)
+
+    emb = CachingEmbedder(base_embed_fn=counting_base)
+    emb.precompute(["a", "bb", "ccc", "a"])
+    n_after_precompute = calls["n"]
+    # subsequent calls are pure lookups -> base NOT called again
+    emb(["a", "bb", "ccc"])
+    assert calls["n"] == n_after_precompute
