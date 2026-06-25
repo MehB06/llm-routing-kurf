@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from baselines.ltt_router.protocols import ModelSpec, QueryRecord
-from baselines.ltt_router.evaluate import (
+from baselines.ltt_router.eval.metrics import (
     oracle_accuracy, max_expert, fixed_model_row, random_router_row,
     per_model_accuracy, evaluate,
 )
@@ -122,8 +122,8 @@ def test_realized_risk_matches_manual():
     recs = make_records(300, seed=2)
     result = LTTAdaptor("UNUSED", seed=42).run(alpha=0.30, embed_fn=stub_embed_fn, records=recs)
     ev = evaluate(result)
-    from baselines.ltt_router.loss import regret_loss
-    from baselines.ltt_router.calibration import is_active_route
+    from baselines.ltt_router.core.loss import regret_loss
+    from baselines.ltt_router.core.calibration import is_active_route
     plan = result.plan
     lam = plan.lambda_hat if plan.lambda_hat is not None else float("inf")
 
@@ -178,7 +178,7 @@ def test_figures_are_written(tmp_path):
 def test_realized_risk_is_conditional_on_routed():
     import numpy as np
     from baselines.ltt_router.protocols import QueryRecord, ModelSpec
-    from baselines.ltt_router.routing import Router
+    from baselines.ltt_router.core.routing import Router
 
     class ScriptedScorer:
         def __init__(self, models): self._models = models
@@ -224,7 +224,7 @@ def test_realized_risk_is_conditional_on_routed():
     r.models = models; r.alpha = 0.15; r.delta = 0.10
     r.apply_pareto = True; r.seed = 0
 
-    from baselines.ltt_router.evaluate import evaluate
+    from baselines.ltt_router.eval.metrics import evaluate
     ev = evaluate(r)
     if ev.certified and ev.routed_fraction > 0:
         # the certified (conditional) risk must respect the bound

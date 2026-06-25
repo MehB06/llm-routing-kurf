@@ -20,7 +20,7 @@ from baselines.ltt_router.routers.embedding_lr import (
     EmbeddingLRRouter,
 )
 from baselines.ltt_router.routers.random_router import RandomRouter
-from baselines.ltt_router.routing import Router
+from baselines.ltt_router.core.routing import Router
 
 
 # Test fixtures: a fake BaselineRecord and a deterministic stub embedder

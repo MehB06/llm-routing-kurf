@@ -5,7 +5,6 @@ These verify that:
   - ModelSpec / QueryRecord validate their invariants,
   - a trivial RoutingFunction implementation satisfies the runtime-checkable
     protocol (proving "any router plugs in"),
-  - a trivial LossFn satisfies its protocol.
 """
 
 import numpy as np
@@ -15,7 +14,6 @@ from baselines.ltt_router.protocols import (
     ModelSpec,
     QueryRecord,
     RoutingFunction,
-    LossFn,
 )
 
 
@@ -101,14 +99,3 @@ def test_constant_router_satisfies_protocol():
     out = r.score("anything")
     assert out.shape == (3,)
     assert np.allclose(out, [0.3, 0.6, 0.9])
-
-
-# LossFn protocol
-class ZeroLoss:
-    def __call__(self, chosen_idx, correct, evaluated):
-        return 0.0
-
-
-def test_zero_loss_satisfies_protocol():
-    assert isinstance(ZeroLoss(), LossFn)
-    assert ZeroLoss()(0, np.array([1]), np.array([True])) == 0.0

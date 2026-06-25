@@ -11,7 +11,7 @@ import itertools
 import numpy as np
 import pytest
 
-from baselines.ltt_router.loss import regret_loss, per_query_regret
+from baselines.ltt_router.core.loss import regret_loss
 
 
 # Core regret semantics
@@ -97,21 +97,3 @@ def test_v1_collapse_when_routed_oracle_is_zero():
 
 
 # Vectorised path matches the scalar path
-def test_vectorised_matches_scalar():
-    rng = np.random.default_rng(0)
-    m, n = 200, 5
-    correct = rng.integers(0, 2, size=(m, n))
-    evaluated = rng.random((m, n)) > 0.2          # ~80% evaluated
-    # Guarantee at least one evaluated model per row, and pick a chosen model that is evaluated.
-    chosen = np.empty(m, dtype=int)
-    for i in range(m):
-        if not evaluated[i].any():
-            evaluated[i, 0] = True
-        evald = np.flatnonzero(evaluated[i])
-        chosen[i] = rng.choice(evald)
-
-    batch = per_query_regret(chosen, correct, evaluated)
-    scalar = np.array([
-        regret_loss(int(chosen[i]), correct[i], evaluated[i]) for i in range(m)
-    ])
-    assert np.array_equal(batch, scalar)

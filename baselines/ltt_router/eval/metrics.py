@@ -27,7 +27,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from baselines.ltt_router.protocols import QueryRecord, ModelSpec
-from baselines.ltt_router.loss import regret_loss
+from baselines.ltt_router.core.loss import regret_loss
 
 
 # Reference rows (benchmark definitions, computed on OUR test set)
@@ -150,7 +150,7 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
 # Chosen-model accuracy + cost per query, plus per-query active-route status.
     # The GUARANTEE is conditional: regret ≤ α AMONG actively-routed queries
     # So realized_risk must use the SAME denominator.
-    from baselines.ltt_router.calibration import is_active_route
+    from baselines.ltt_router.core.calibration import is_active_route
     lam = plan.lambda_hat if plan.lambda_hat is not None else float("inf")
 
     routed_regrets, all_regrets = [], []
@@ -163,7 +163,7 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
             routed_regrets.append(r)        # only these are under the guarantee
         traffic[int(c)] += 1
 
-    from baselines.ltt_router.benchmark_metrics import (
+    from baselines.ltt_router.eval.benchmark import (
         emit_baseline_records, benchmark_metrics,
     )
     routed_records = emit_baseline_records(queries, chosen, models, split="test")

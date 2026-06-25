@@ -67,17 +67,20 @@ baselines/
 ├── adaptors/
 │   └── ltt_adaptor.py        # benchmark bridge: load -> split -> train -> calibrate -> route
 └── ltt_router/
-    ├── protocols.py          # ModelSpec, QueryRecord, RoutingFunction, LossFn contracts
-    ├── loss.py               # general N-model regret loss
-    ├── calibration.py        # LTT core: binomial p-value, FST, cheapest-safe rule, λ̂
-    ├── routing.py            # Pareto filter + cost-ordering + the public Router
-    ├── splitting.py          # three-way (train/calib/test) prompt-level split
-    ├── evaluate.py           # two metric blocks (benchmark-comparable + guarantee)
-    ├── experiment.py         # repeated-trials harness + α-sweep + figures
-    ├── routers/
+    ├── protocols.py          # ModelSpec, QueryRecord, RoutingFunction contracts
+    ├── core/                 # the risk-controlled engine (the contribution)
+    │   ├── loss.py           # general N-model regret loss
+    │   ├── calibration.py    # LTT core: binomial p-value, FST, cheapest-safe rule, λ̂
+    │   └── routing.py        # Pareto filter + cost-ordering + the public Router
+    ├── routers/              # pluggable scorers (the only trained part)
     │   ├── embedding_lr.py   # the trained scorer (embedding + per-model LR) + caching
     │   └── random_router.py  # ablation control (safety comes from calibration)
-    └── tests/                # 76 tests, synthetic data + stub embedder, no downloads
+    ├── eval/                 # measurement, separate from the engine
+    │   ├── metrics.py        # two metric blocks (benchmark-comparable + guarantee)
+    │   └── benchmark.py      # emit BaselineRecords + benchmark-aggregator metrics
+    ├── splitting.py          # three-way (train/calib/test) prompt-level split
+    ├── experiment.py         # repeated-trials harness + α-sweep + figures
+    └── tests/                # synthetic data + stub embedder, no downloads
 ```
 
 ---

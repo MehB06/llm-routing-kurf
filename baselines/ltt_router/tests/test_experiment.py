@@ -9,7 +9,7 @@ Regression tests for the repeated-trials guarantee validation.
 
 import numpy as np
 
-from baselines.ltt_router.calibration import binomial_pvalue
+from baselines.ltt_router.core.calibration import binomial_pvalue
 from baselines.ltt_router.experiment import (
     TrialOutcome,
     pooled_true_risk,

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from baselines.ltt_router.protocols import QueryRecord, ModelSpec
-from baselines.ltt_router.routing import (
+from baselines.ltt_router.core.routing import (
     model_accuracies,
     pareto_survivors,
     cost_ordered,
@@ -185,7 +185,7 @@ def test_route_handles_unevaluated_fallback():
     # 3 models; fallback is the most expensive (idx 2). On a query where idx2 has NO row,
     # and nothing clears λ, the rule must pick the most-capable EVALUATED model
     # (idx 1 here), never return the unevaluated fallback (which would be unscorable).
-    from baselines.ltt_router.calibration import cheapest_safe_decision_factory
+    from baselines.ltt_router.core.calibration import cheapest_safe_decision_factory
     decide = cheapest_safe_decision_factory(cost_order=np.array([0, 1, 2]), fallback_idx=2)
     q = QueryRecord(
         scores=np.array([0.1, 0.1, 0.1]),       # nothing clears a high λ

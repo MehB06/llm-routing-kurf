@@ -3,7 +3,6 @@ This module defines the interfaces that decouple the three pluggable pieces of
 the system:
 
     RoutingFunction:  f(x) -> scores[N]      score per model
-    LossFn:           L(chosen, correct[N]) -> float    regret of the choice
     (CalibrationCore consumes the above; in calibration.py)
 
 Nothing below the RoutingFunction boundary knows which router produced the
@@ -121,23 +120,4 @@ class RoutingFunction(Protocol):
         Return float[N] route-to-me scores for one query, aligned to
         self.models.
         """
-        ...
-
-
-@runtime_checkable
-class LossFn(Protocol):
-    """
-    A loss over a single routing decision. Given the index of the chosen model
-    and the per-model correctness for this query, it returns a non-negative scalar loss. 0 = no regret.
-
-    The concrete loss used by general N-model regret lives in loss.py; 
-    this protocol lets experiments swap in alternatives without touching calibration.
-    """
-
-    def __call__(
-        self,
-        chosen_idx: int,
-        correct: np.ndarray,
-        evaluated: np.ndarray,
-    ) -> float:
         ...

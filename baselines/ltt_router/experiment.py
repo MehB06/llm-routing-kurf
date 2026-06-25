@@ -36,7 +36,7 @@ from typing import Callable, List, Optional, Sequence
 
 import numpy as np
 
-from baselines.ltt_router.evaluate import evaluate, EvalResult, load_baseline_results
+from baselines.ltt_router.eval.metrics import evaluate, EvalResult, load_baseline_results
 
 
 DEFAULT_OUTDIR = "baselines/ltt_router/experiments"

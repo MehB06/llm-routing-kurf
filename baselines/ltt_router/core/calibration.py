@@ -26,7 +26,7 @@ import numpy as np
 from scipy import stats
 
 from baselines.ltt_router.protocols import QueryRecord
-from baselines.ltt_router.loss import regret_loss
+from baselines.ltt_router.core.loss import regret_loss
 
 
 # Minimum number of cheap-routed calibration queries required for a candidate λ
@@ -50,25 +50,8 @@ def binomial_pvalue(risk_hat: float, n: int, alpha: float) -> float:
     return float(stats.binom.cdf(n_fail, n, alpha))
 
 
-def hoeffding_bentkus_pvalue(risk_hat: float, n: int, alpha: float) -> float:
-    """
-    Hoeffding-Bentkus p-value for H: true risk ≥ alpha. Distribution-free.
-    Kept as a cross-check against the binomial p-value. Returns min(Hoeffding,
-    Bentkus).
-    """
-    if risk_hat >= alpha:
-        return 1.0
-    h = np.exp(-n * _kl_bernoulli(risk_hat, alpha))
-    b = np.e * stats.binom.cdf(int(np.ceil(n * risk_hat)), n, alpha)
-    return float(min(h, b, 1.0))
 
 
-def _kl_bernoulli(p: float, q: float) -> float:
-    """KL divergence between Bernoulli(p) and Bernoulli(q)."""
-    eps = 1e-12
-    p = min(max(p, eps), 1 - eps)
-    q = min(max(q, eps), 1 - eps)
-    return p * np.log(p / q) + (1 - p) * np.log((1 - p) / (1 - q))
 
 
 # Fixed Sequence Testing
@@ -255,7 +238,8 @@ def calibrate_threshold(
     n_lambdas:
         Resolution of the λ grid over [0, 1].
     pvalue:
-        "binomial" (default, UMP for 0/1 loss) or "hb" (distribution-free check).
+        Retained for API stability; "binomial" is the only supported method
+        (exact, UMP for the 0/1 loss).
     min_routed:
         Minimum actively-routed count for a λ to be ELIGIBLE for FST. Ineligible
         λ are FILTERED OUT of the sequence.
@@ -266,16 +250,13 @@ def calibrate_threshold(
     lambdas = np.linspace(0.0, 1.0, n_lambdas)
     risks, ns = build_loss_table(queries, lambdas, decision_fn, fallback_idx, cost_order)
 
-    # p-value per λ for the null.
+    # p-value per λ for the null (exact binomial, UMP for the 0/1 loss).
     pvals = np.ones(len(lambdas))
     for i in range(len(lambdas)):
         if ns[i] == 0:
             pvals[i] = 1.0
             continue
-        if pvalue == "binomial":
-            pvals[i] = binomial_pvalue(risks[i], ns[i], alpha)
-        else:
-            pvals[i] = hoeffding_bentkus_pvalue(risks[i], ns[i], alpha)
+        pvals[i] = binomial_pvalue(risks[i], ns[i], alpha)
 
     # Build the fixed sequence from the SAFE end (high λ) toward permissive (low
     # λ), over ELIGIBLE thresholds only (n ≥ min_routed).

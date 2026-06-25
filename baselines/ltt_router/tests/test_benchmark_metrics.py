@@ -5,7 +5,7 @@ Tests for the benchmark-comparable metric delegation
 import numpy as np
 
 from baselines.ltt_router.protocols import ModelSpec, QueryRecord
-from baselines.ltt_router.benchmark_metrics import (
+from baselines.ltt_router.eval.benchmark import (
     emit_baseline_records, benchmark_metrics,
 )
 

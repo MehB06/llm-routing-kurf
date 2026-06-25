@@ -20,7 +20,7 @@ import numpy as np
 from baselines.ltt_router.protocols import ModelSpec, QueryRecord
 from baselines.ltt_router.splitting import three_way_split
 from baselines.ltt_router.routers.embedding_lr import build_embedding_lr_router, EmbedFn
-from baselines.ltt_router.routing import Router, RouterPlan
+from baselines.ltt_router.core.routing import Router, RouterPlan
 
 
 def build_model_specs(records: Sequence) -> List[ModelSpec]:

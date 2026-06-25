@@ -21,10 +21,6 @@ from __future__ import annotations
 
 import numpy as np
 
-# Re-exported for callers that want a name for "this entry is a placeholder".
-MISSING = None
-
-
 def regret_loss(
     chosen_idx: int,
     correct: np.ndarray,
@@ -68,54 +64,3 @@ def regret_loss(
 
     # Regret iff we were wrong AND a correct choice existed.
     return float((not chosen_correct) and best_attainable_correct)
-
-
-def per_query_regret(
-    chosen_indices: np.ndarray,
-    correct_matrix: np.ndarray,
-    evaluated_matrix: np.ndarray,
-) -> np.ndarray:
-    """
-    Vectorised regret over a batch of queries.convenience for the calibration loss table and the metrics. 
-    It is exactly equivalent to calling regret_loss per row.
-
-    chosen_indices:
-        int[M] chosen model index per query.
-    correct_matrix:
-        int[M, N] correctness per (query, model).
-    evaluated_matrix:
-        bool[M, N] evaluated mask per (query, model).
-
-    Returns
-        float[M] regret (0.0/1.0) per query.
-    """
-    chosen_indices = np.asarray(chosen_indices)
-    correct_matrix = np.asarray(correct_matrix)
-    evaluated_matrix = np.asarray(evaluated_matrix, dtype=bool)
-
-    m, n = correct_matrix.shape
-    if chosen_indices.shape[0] != m:
-        raise ValueError(
-            f"chosen_indices has {chosen_indices.shape[0]} rows but "
-            f"correct_matrix has {m}"
-        )
-    if evaluated_matrix.shape != correct_matrix.shape:
-        raise ValueError("correct_matrix and evaluated_matrix shapes differ")
-
-    rows = np.arange(m)
-
-    # Was the chosen model evaluated?
-    chosen_eval = evaluated_matrix[rows, chosen_indices]
-    if not chosen_eval.all():
-        bad = int(np.argmin(chosen_eval))
-        raise ValueError(
-            f"query {bad}: chosen model {int(chosen_indices[bad])} was not evaluated"
-        )
-
-    chosen_correct = correct_matrix[rows, chosen_indices] == 1
-
-    # any evaluated model correct?
-    any_correct = np.any((correct_matrix == 1) & evaluated_matrix, axis=1)
-
-    regret = (~chosen_correct) & any_correct
-    return regret.astype(float)

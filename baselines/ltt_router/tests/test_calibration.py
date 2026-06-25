@@ -19,9 +19,8 @@ import numpy as np
 import pytest
 
 from baselines.ltt_router.protocols import QueryRecord
-from baselines.ltt_router.calibration import (
+from baselines.ltt_router.core.calibration import (
     binomial_pvalue,
-    hoeffding_bentkus_pvalue,
     fixed_sequence_test,
     cheapest_safe_decision_factory,
     build_loss_table,
@@ -49,20 +48,8 @@ def test_binomial_pvalue_monotone_in_observed_risk():
     assert all(ps[i] <= ps[i + 1] for i in range(len(ps) - 1))
 
 
-def test_hb_pvalue_one_when_risk_exceeds_alpha():
-    assert hoeffding_bentkus_pvalue(risk_hat=0.3, n=100, alpha=0.2) == 1.0
 
 
-def test_hb_is_conservative_vs_binomial():
-    # Distribution-free HB should never give a SMALLER p-value than the exact
-    # binomial (it is looser / more conservative).
-    for r in (0.0, 0.02, 0.05, 0.08):
-        b = binomial_pvalue(r, 200, 0.15)
-        hb = hoeffding_bentkus_pvalue(r, 200, 0.15)
-        assert hb >= b - 1e-9
-
-
-# 2. FST direction 
 def test_fst_certifies_contiguous_prefix_from_safe_end():
     # lambdas high->low; p-values: safe (high λ) pass, then fail.
     # ordered high→low

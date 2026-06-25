@@ -21,7 +21,7 @@ from typing import List, Optional, Sequence
 import numpy as np
 
 from baselines.ltt_router.protocols import QueryRecord, RoutingFunction, ModelSpec
-from baselines.ltt_router.calibration import (
+from baselines.ltt_router.core.calibration import (
     cheapest_safe_decision_factory,
     calibrate_threshold,
     CalibrationResult,
