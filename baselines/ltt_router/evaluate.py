@@ -147,27 +147,29 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
     plan = result.plan
     names = [m.name for m in models]
 
-    # Chosen-model accuracy + cost per query, plus per-query active-route status.
+# Chosen-model accuracy + cost per query, plus per-query active-route status.
     # The GUARANTEE is conditional: regret ≤ α AMONG actively-routed queries
     # So realized_risk must use the SAME denominator.
     from baselines.ltt_router.calibration import is_active_route
     lam = plan.lambda_hat if plan.lambda_hat is not None else float("inf")
 
-    accs, costs = [], []
     routed_regrets, all_regrets = [], []
     traffic = np.zeros(n_models)
     for q, c in zip(queries, chosen):
         # chosen model is guaranteed evaluated (router only picks evaluated/fallback)
-        accs.append(int(q.correct[c] == 1))
-        costs.append(float(q.cost[c]))
         r = regret_loss(int(c), q.correct, q.evaluated)
         all_regrets.append(r)
         if is_active_route(q, lam, plan.cost_order):
             routed_regrets.append(r)        # only these are under the guarantee
-        traffic[c] += 1
+        traffic[int(c)] += 1
 
-    avg_acc = float(np.mean(accs)) if accs else 0.0
-    avg_cost = float(np.mean(costs)) if costs else 0.0
+    from baselines.ltt_router.benchmark_metrics import (
+        emit_baseline_records, benchmark_metrics,
+    )
+    routed_records = emit_baseline_records(queries, chosen, models, split="test")
+    bm = benchmark_metrics(routed_records)
+    avg_acc = bm["accuracy"]
+    avg_cost = bm["avg_cost"]
     # realized_risk = conditional regret among actively-routed queries (matches λ̂).
     realized_risk = float(np.mean(routed_regrets)) if routed_regrets else 0.0
     # unconditional regret over ALL queries (incl. deferrals) — diagnostic only.
