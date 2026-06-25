@@ -115,6 +115,10 @@ class EvalResult:
     routed_fraction: float
     per_model_traffic: Dict[str, float]
     survivors: List[str]
+    # raw counts behind the conditional realized_risk, so callers can pool across
+    # trials to estimate TRUE risk and form confidence-corrected violation checks.
+    n_routed: int = 0             # actively-routed test queries (the risk denominator)
+    n_routed_fail: int = 0        # regret events among those (the risk numerator)
 
     def comparable_table_row(self) -> Dict[str, float]:
         # The row we hand to the benchmark's comparison table.
@@ -206,6 +210,8 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
         routed_fraction=routed_fraction,
         per_model_traffic=routing_dist,
         survivors=[names[i] for i in plan.survivors],
+        n_routed=len(routed_regrets),
+        n_routed_fail=int(np.sum(routed_regrets)) if routed_regrets else 0,
     )
 
 
