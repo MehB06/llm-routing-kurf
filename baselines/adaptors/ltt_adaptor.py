@@ -21,6 +21,7 @@ from baselines.ltt_router.protocols import ModelSpec, QueryRecord
 from baselines.ltt_router.splitting import three_way_split
 from baselines.ltt_router.routers.embedding_lr import build_embedding_lr_router, EmbedFn
 from baselines.ltt_router.core.routing import Router, RouterPlan
+from baselines.ltt_router.core.calibration import MIN_ROUTED_DEFAULT
 
 
 def build_model_specs(records: Sequence) -> List[ModelSpec]:
@@ -130,7 +131,7 @@ class LTTAdaptor:
         apply_pareto: bool = True,
         embed_fn: Optional[EmbedFn] = None,
         models_subset: Optional[List[str]] = None,
-        min_routed: int = 100,
+        min_routed: int = MIN_ROUTED_DEFAULT,
         records: Optional[Sequence] = None,
     ) -> AdaptorResult:
         """

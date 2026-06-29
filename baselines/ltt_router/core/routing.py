@@ -26,6 +26,7 @@ from baselines.ltt_router.core.calibration import (
     calibrate_threshold,
     CalibrationResult,
     DecisionFn,
+    MIN_ROUTED_DEFAULT,
 )
 
 # 1. Pareto pre-filter
@@ -152,7 +153,7 @@ class Router:
         apply_pareto: bool = True,
         n_lambdas: int = 100,
         pvalue: str = "binomial",
-        min_routed: int = 30,
+        min_routed: int = MIN_ROUTED_DEFAULT,
     ) -> RouterPlan:
         """
         Pareto-filter (on the calibration data), cost-order, then run LTT to
