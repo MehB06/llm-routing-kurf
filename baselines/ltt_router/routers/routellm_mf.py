@@ -24,15 +24,22 @@ from baselines.ltt_router.routers.embedding_lr import default_embed_fn, EmbedFn
 from baselines.RouteLLM.routers.matrix_factorization.model import MODEL_IDS
 
 
+def _sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-np.asarray(x, float)))
+
+
+# --------------------------------------------------------------------------
 # Calibration: map raw δ -> calibrated P(correct), per model.
+# Three calibrator types share one interface: __call__(delta) -> prob in [0,1].
+# --------------------------------------------------------------------------
 
 class PlattCalibrator:
     """P = sigmoid(a·δ + b). Rigid 2-param S-curve; robust on little data."""
-    def __init__(self, a: float, b: float):
+    def __init__(self, a, b):
         self.a, self.b = float(a), float(b)
 
-    def __call__(self, delta: np.ndarray) -> np.ndarray:
-        return 1.0 / (1.0 + np.exp(-(self.a * np.asarray(delta, float) + self.b)))
+    def __call__(self, delta):
+        return _sigmoid(self.a * np.asarray(delta, float) + self.b)
 
 
 class IsotonicCalibrator:
@@ -40,33 +47,32 @@ class IsotonicCalibrator:
     def __init__(self, iso):
         self._iso = iso
 
-    def __call__(self, delta: np.ndarray) -> np.ndarray:
+    def __call__(self, delta):
         return np.clip(self._iso.predict(np.asarray(delta, float)), 0.0, 1.0)
 
 
 class ConstantCalibrator:
     """Constant success rate, for degenerate (single-class / sparse) models."""
-    def __init__(self, p: float):
+    def __init__(self, p):
         self.p = float(p)
 
-    def __call__(self, delta: np.ndarray) -> np.ndarray:
+    def __call__(self, delta):
         return np.full(np.asarray(delta, float).shape, self.p, float)
 
 
-def _fit_platt(delta: np.ndarray, y: np.ndarray) -> PlattCalibrator:
+def _fit_platt(delta, y):
     from sklearn.linear_model import LogisticRegression
     lr = LogisticRegression(max_iter=1000).fit(delta.reshape(-1, 1), y)
     return PlattCalibrator(lr.coef_[0, 0], lr.intercept_[0])
 
 
-def _fit_isotonic(delta: np.ndarray, y: np.ndarray) -> IsotonicCalibrator:
+def _fit_isotonic(delta, y):
     from sklearn.isotonic import IsotonicRegression
-    iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
-    iso.fit(delta, y)
+    iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0).fit(delta, y)
     return IsotonicCalibrator(iso)
 
 
-def expected_calibration_error(p: np.ndarray, y: np.ndarray, n_bins: int = 10) -> float:
+def expected_calibration_error(p, y, n_bins=10) -> float:
     """Binned ECE: mean |confidence - accuracy| weighted by bin size."""
     p, y = np.asarray(p, float), np.asarray(y, float)
     if len(p) == 0:
@@ -83,11 +89,10 @@ def expected_calibration_error(p: np.ndarray, y: np.ndarray, n_bins: int = 10) -
 def _cv_ece(delta, y, fit_fn, n_splits=5, seed=0) -> float:
     """
     CROSS-VALIDATED ECE: fit on k-1 folds, score the held-out fold, average.
-    This is the only honest way to compare Platt vs isotonic — isotonic's
-    flexibility drives IN-SAMPLE ECE to ~0 by overfitting, which is misleading.
+    The only honest way to compare Platt vs isotonic — isotonic's flexibility
+    drives IN-SAMPLE ECE to ~0 by overfitting, which is misleading.
     """
-    n = len(y)
-    order = np.random.default_rng(seed).permutation(n)
+    order = np.random.default_rng(seed).permutation(len(y))
     folds = np.array_split(order, n_splits)
     eces = []
     for i in range(n_splits):
@@ -95,8 +100,7 @@ def _cv_ece(delta, y, fit_fn, n_splits=5, seed=0) -> float:
         tr = np.concatenate([folds[j] for j in range(n_splits) if j != i])
         if len(np.unique(y[tr])) < 2 or len(te) == 0:
             continue
-        cal = fit_fn(delta[tr], y[tr])
-        eces.append(expected_calibration_error(cal(delta[te]), y[te]))
+        eces.append(expected_calibration_error(fit_fn(delta[tr], y[tr])(delta[te]), y[te]))
     return float(np.mean(eces)) if eces else float("nan")
 
 
@@ -108,30 +112,30 @@ class ModelCalibration:
     platt: Callable
     isotonic: Callable
     ece_raw: float        # ECE of sigmoid(δ), uncalibrated baseline
-    ece_platt: float      # CROSS-VALIDATED
-    ece_isotonic: float   # CROSS-VALIDATED
+    ece_platt: float      # cross-validated
+    ece_isotonic: float   # cross-validated
     degenerate: bool
 
 
 def fit_model_calibration(delta, y, name, min_samples=50) -> ModelCalibration:
     """Fit Platt + isotonic for ONE model from held-out (δ, correct) pairs."""
     delta, y = np.asarray(delta, float), np.asarray(y, float)
-    mask = ~np.isnan(delta)
-    delta, y = delta[mask], y[mask]
+    keep = ~np.isnan(delta)
+    delta, y = delta[keep], y[keep]
     n = int(len(y))
     pos = float(y.mean()) if n else 0.0
 
-    if (n < min_samples) or (len(np.unique(y)) < 2):
+    # Degenerate (too few samples or single class) -> constant fallback.
+    if n < min_samples or len(np.unique(y)) < 2:
         const = ConstantCalibrator(pos if n else 0.5)
-        return ModelCalibration(name, n, pos, const, const,
-                                float("nan"), float("nan"), float("nan"), True)
+        nan = float("nan")
+        return ModelCalibration(name, n, pos, const, const, nan, nan, nan, True)
 
-    platt, iso = _fit_platt(delta, y), _fit_isotonic(delta, y)
-    raw = 1.0 / (1.0 + np.exp(-delta))
     # Final calibrators fit on ALL data; reported ECEs are cross-validated.
     return ModelCalibration(
-        name, n, pos, platt, iso,
-        expected_calibration_error(raw, y),
+        name, n, pos,
+        _fit_platt(delta, y), _fit_isotonic(delta, y),
+        expected_calibration_error(_sigmoid(delta), y),
         _cv_ece(delta, y, _fit_platt),
         _cv_ece(delta, y, _fit_isotonic),
         False,
@@ -140,40 +144,33 @@ def fit_model_calibration(delta, y, name, min_samples=50) -> ModelCalibration:
 
 def choose_method(cals: Dict[str, ModelCalibration]) -> str:
     """Pick 'platt' or 'isotonic' by mean CV-ECE over non-degenerate models."""
-    p = [c.ece_platt for c in cals.values() if not c.degenerate and not np.isnan(c.ece_platt)]
-    i = [c.ece_isotonic for c in cals.values() if not c.degenerate and not np.isnan(c.ece_isotonic)]
-    mp = float(np.mean(p)) if p else float("inf")
-    mi = float(np.mean(i)) if i else float("inf")
-    return "isotonic" if mi < mp else "platt"
+    def mean_ece(attr):
+        vals = [getattr(c, attr) for c in cals.values()
+                if not c.degenerate and not np.isnan(getattr(c, attr))]
+        return float(np.mean(vals)) if vals else float("inf")
+    return "isotonic" if mean_ece("ece_isotonic") < mean_ece("ece_platt") else "platt"
 
 
 def calibrator_map(cals: Dict[str, ModelCalibration], method: str) -> Dict[str, Callable]:
-    pick = (lambda c: c.isotonic) if method == "isotonic" else (lambda c: c.platt)
-    return {name: pick(c) for name, c in cals.items()}
+    return {name: getattr(c, method) for name, c in cals.items()}
 
 
+# --------------------------------------------------------------------------
 # The scorer.
+# --------------------------------------------------------------------------
 
 class RouteLLMMFRouter:
     """
     RoutingFunction backed by a trained MF model, ALWAYS calibrated.
 
-    score_batch(prompts)     -> [G, N] calibrated P(correct). Unmapped models or
-                                 models with no calibrator -> constant fallback.
+    score_batch(prompts)     -> [G, N] calibrated P(correct); unmapped models or
+                                models with no calibrator -> constant fallback.
     raw_score_batch(prompts) -> [G, N] raw δ (NaN for unmapped), used to FIT the
-                                 calibrators offline.
+                                calibrators offline.
     """
 
-    def __init__(
-        self,
-        models: List[ModelSpec],
-        P: np.ndarray,
-        text_proj: Optional[np.ndarray],
-        classifier: np.ndarray,
-        embed_fn: EmbedFn,
-        calibrators: Optional[Dict[str, Callable]] = None,
-        fallback_score: float = 0.5,
-    ):
+    def __init__(self, models, P, text_proj, classifier, embed_fn,
+                 calibrators=None, fallback_score=0.5):
         self._models = models
         self._P = np.asarray(P, float)
         self._proj = None if text_proj is None else np.asarray(text_proj, float)
@@ -187,39 +184,31 @@ class RouteLLMMFRouter:
     def models(self) -> Sequence[ModelSpec]:
         return self._models
 
-    def _project(self, prompts):
+    def _delta_matrix(self, prompts):
+        """[G, N] raw δ; NaN columns for models absent from the MF table."""
         X = np.asarray(self._embed_fn(prompts), float)
-        return X @ self._proj.T if self._proj is not None else X
-
-    def _delta(self, Xp, row):
-        pe = self._P[row]
-        pe = pe / (np.linalg.norm(pe) + 1e-12)
-        return (Xp * pe) @ self._clf
-
-    def raw_score_batch(self, prompts: List[str]) -> np.ndarray:
-        Xp = self._project(prompts)
+        Xp = X @ self._proj.T if self._proj is not None else X
         out = np.full((len(prompts), len(self._models)), np.nan, float)
-        for m in self._models:
-            row = self._row.get(m.index)
-            if row is not None:
-                out[:, m.index] = self._delta(Xp, row)
-        return out
-
-    def score_batch(self, prompts: List[str]) -> np.ndarray:
-        Xp = self._project(prompts)
-        out = np.full((len(prompts), len(self._models)), self._fallback, float)
         for m in self._models:
             row = self._row.get(m.index)
             if row is None:
                 continue
-            delta = self._delta(Xp, row)
-            cal = self._calibrators.get(m.name)
-            if cal is None:
-                # No calibrator: should not happen in the built-in-calibration
-                # path, but stay safe with sigmoid(δ) rather than crash.
-                out[:, m.index] = 1.0 / (1.0 + np.exp(-delta))
-            else:
-                out[:, m.index] = np.clip(cal(delta), 0.0, 1.0)
+            pe = self._P[row]
+            pe = pe / (np.linalg.norm(pe) + 1e-12)
+            out[:, m.index] = (Xp * pe) @ self._clf
+        return out
+
+    def raw_score_batch(self, prompts: List[str]) -> np.ndarray:
+        return self._delta_matrix(prompts)
+
+    def score_batch(self, prompts: List[str]) -> np.ndarray:
+        delta = self._delta_matrix(prompts)
+        out = np.full_like(delta, self._fallback)
+        for m in self._models:
+            if np.isnan(delta[:, m.index]).all():
+                continue  # unmapped model -> keep fallback
+            cal = self._calibrators[m.name]  # calibration is required & built-in
+            out[:, m.index] = np.clip(cal(delta[:, m.index]), 0.0, 1.0)
         return out
 
     def score(self, prompt: str, dataset_id: str = "") -> np.ndarray:
@@ -229,10 +218,8 @@ class RouteLLMMFRouter:
 def _load_mf_state(checkpoint_path: str) -> dict:
     import torch
     sd = torch.load(checkpoint_path, map_location="cpu")
-    out = {}
-    for k, v in sd.items():
-        out[k] = v.detach().cpu().numpy() if hasattr(v, "detach") else np.asarray(v)
-    return out
+    return {k: (v.detach().cpu().numpy() if hasattr(v, "detach") else np.asarray(v))
+            for k, v in sd.items()}
 
 
 def build_routellm_mf_router(
@@ -246,21 +233,14 @@ def build_routellm_mf_router(
 ) -> RouteLLMMFRouter:
     """
     Load a trained MF checkpoint + per-model calibrators into a RoutingFunction.
-
-    calibrators is REQUIRED (calibration is built-in). Fit them first with
-    mf_pipeline.py fit-calibrators.
+    Fit the calibrators first with `mf_pipeline.py fit-calibrators`. Pass an empty
+    dict only to read raw δ (e.g. during calibrator fitting itself).
     """
-    if embed_fn is None:
-        embed_fn = default_embed_fn
     state = _state if _state is not None else _load_mf_state(checkpoint_path)
-
-    P = state.get("P.weight")
-    clf = state.get("classifier.weight")
+    P, clf = state.get("P.weight"), state.get("classifier.weight")
     if P is None or clf is None:
         raise KeyError("Checkpoint missing 'P.weight' or 'classifier.weight'.")
-    proj = state.get("text_proj.weight")  # None when use_proj=False
-
     return RouteLLMMFRouter(
-        models=models, P=P, text_proj=proj, classifier=clf,
-        embed_fn=embed_fn, calibrators=calibrators, fallback_score=fallback_score,
+        models, P, state.get("text_proj.weight"), clf,
+        embed_fn or default_embed_fn, calibrators, fallback_score,
     )
