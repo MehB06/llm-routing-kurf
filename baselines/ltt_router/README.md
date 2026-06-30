@@ -156,3 +156,91 @@ In accuracy/cost space the LTT router sits alongside the strong reference points
 bound that no other method reports**. RouteLLM achieves higher accuracy at lower
 cost here See
 `experiments/benchmark_comparison.png`.
+
+---
+
+## RouteLLM matrix-factorization scorer under the LTT guarantee
+
+Beyond the embedding+LR scorer, the framework can wrap **RouteLLM's trained
+matrix-factorization (MF) scorer** as the `RoutingFunction`, certifying *its*
+scores with the same LTT core. This isolates the LTT wrapper's cost: same scorer
+RouteLLM uses, now carrying a guarantee.
+
+### What is reused vs added
+
+We reuse RouteLLM's **trained per-model quality score** `δ(M, q)`, not its
+2-model routing wrapper. RouteLLM's pairwise winrate is `σ(δ(a) − δ(b))`; `δ`
+itself is per-model, so we read one `δ` per model and calibrate it to a success
+probability. Everything below the `RoutingFunction` boundary (split, Pareto, FST,
+metrics) is untouched.
+
+```
+baselines/ltt_router/routers/routellm_mf.py   # MF scorer + built-in calibration (Platt/isotonic)
+baselines/ltt_router/routers/mf_pipeline.py   # offline prep: build-inputs + fit-calibrators
+baselines/ltt_router/plot_routellm_sweep.py   # honest α-sweep (certified vs abstained)
+baselines/ltt_router/run_routellm_experiment.py  # single-seed α-sweep + benchmark point
+```
+
+### Why single-seed (seed 42)
+
+The MF checkpoint is trained **once** on seed-42's `train_fit` and the
+calibrators on seed-42's `train_cal`. The multi-seed guarantee histogram
+re-splits per seed, which would leak seed-42 training prompts into other seeds'
+CALIB/TEST and break disjointness. At seed 42 every set is disjoint by
+construction: `train_fit → MF`, `train_cal → calibrators`, `CALIB → LTT`,
+`TEST → eval`. So the MF scorer is reported via an α-sweep + benchmark point at
+seed 42; the LR scorer keeps its full multi-seed histogram.
+
+### Calibration is built in 
+
+Raw `δ` has the right *ordering* but is not a success probability, so the MF
+scorer is always calibrated: per-model **Platt** and **isotonic** are fit on the
+held-out `train_cal` slice and the better is chosen by **cross-validated ECE**
+(in-sample ECE would let isotonic overfit to a fake ~0). Mean ECE drops from
+~0.075 (raw `sigmoid(δ)`) to ~0.03 (calibrated).
+
+### The certification frontier
+
+The cheapest Pareto survivor (`deepseek-v3-0324`) is only ≈40% accurate, so at
+**strict α the calibrated MF scorer correctly abstains** — no threshold is both
+safe and adequately powered, and the router defers everything (realized
+risk = 0 because nothing is routed, *not* because routing is perfect). It begins
+to certify around **α ≈ 0.25**, where it routes ~95% with a certified bound.
+
+This is a principled, reportable result, not a failure: it characterizes the MF
+scorer in the LTT framework's own terms. The LTT-Router trades raw accuracy for
+a *certified* bound — it sits slightly below RouteLLM's unconstrained accuracy
+(~0.585 vs ~0.615) because the guarantee forces conservatism, while carrying the
+risk-control column none of the baselines report.
+
+### Reproduce
+
+```bash
+# 1. build MF inputs (TRAIN -> train_fit/train_cal, pairwise + embeddings)
+python -m baselines.ltt_router.routers.mf_pipeline build-inputs \
+    --config config/baseline_config_performance_cost.yaml \
+    --out-dir baselines/RouteLLM/data/ltt_perfcost_seed42 --seed 42
+
+# 2. train MF (RouteLLM's trainer, unedited; dim=384, use_proj=false)
+python -m baselines.RouteLLM.routers.matrix_factorization.train_matrix_factorization \
+    --config baselines/RouteLLM/mf_train_config_ltt.json
+
+# 3. fit per-model calibrators (CV-ECE picks Platt/isotonic)
+python -m baselines.ltt_router.routers.mf_pipeline fit-calibrators \
+    --config config/baseline_config_performance_cost.yaml \
+    --artifacts-dir baselines/RouteLLM/data/ltt_perfcost_seed42 \
+    --checkpoint baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/mf_model.pt \
+    --out baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/calibrators.pkl \
+    --seed 42 --diagram baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/reliability.png
+
+# 4. α-sweep + benchmark point (auto-picks first certifying α)
+python -m baselines.ltt_router.run_routellm_experiment \
+    --config config/baseline_config_performance_cost.yaml \
+    --mf-checkpoint baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/mf_model.pt \
+    --mf-calibrators baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/calibrators.pkl \
+    --alpha 0.25 --alphas 0.15,0.20,0.22,0.25,0.30,0.35 \
+    --outdir baselines/ltt_router/experiments
+```
+
+Writes `alpha_sweep_routellm.png` (certification frontier) and
+`benchmark_comparison_routellm.png` (at the first certifying α).

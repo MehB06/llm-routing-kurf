@@ -215,32 +215,56 @@ def plot_alpha_sweep(
     outdir: str = DEFAULT_OUTDIR,
     fname: str = "alpha_sweep.png",
 ) -> str:
+    """
+    Cost-savings-vs-risk frontier across α.
+
+    ABSTENTION-AWARE: an α where the scorer certifies nothing routes 0% of
+    queries, so its realized_risk is trivially 0, plotting that as a point on
+    the risk curve reads as "perfect" when it means "did nothing". We therefore
+    plot risk/routed/cost-saved ONLY for CERTIFIED α's and mark abstained α's on
+    the x-axis.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     _ensure_outdir(outdir)
-    realized = [e.realized_risk for e in evals]
-    routed = [e.routed_fraction for e in evals]
-    saved = [e.cost_saved for e in evals]
+    alphas = list(alphas)
+    cert = [bool(e.certified) and e.routed_fraction > 0 for e in evals]
+
+    a_c    = [a for a, c in zip(alphas, cert) if c]
+    risk_c = [e.realized_risk for e, c in zip(evals, cert) if c]
+    rou_c  = [e.routed_fraction for e, c in zip(evals, cert) if c]
+    sav_c  = [e.cost_saved for e, c in zip(evals, cert) if c]
+    a_abst = [a for a, c in zip(alphas, cert) if not c]
 
     fig, ax1 = plt.subplots(figsize=(8, 5))
-    ax1.plot(alphas, realized, "o-", color="#d62728", label="realized risk")
     ax1.plot(alphas, alphas, "--", color="gray", alpha=0.6, label="α (target)")
+    if a_c:
+        ax1.plot(a_c, risk_c, "o-", color="#d62728", label="realized risk (certified)")
+    for i, a in enumerate(a_abst):
+        ax1.axvline(a, color="#cccccc", ls=":", lw=1,
+                    label="abstained (no certification)" if i == 0 else None)
     ax1.set_xlabel("α (risk target)")
     ax1.set_ylabel("realized risk", color="#d62728")
     ax1.tick_params(axis="y", labelcolor="#d62728")
+    ax1.set_ylim(bottom=0)
 
     ax2 = ax1.twinx()
-    ax2.plot(alphas, routed, "s-", color="#2a7ae2", label="routed fraction")
-    ax2.plot(alphas, saved, "^-", color="#2ca02c", label="cost saved")
+    if a_c:
+        ax2.plot(a_c, rou_c, "s-", color="#2a7ae2", label="routed fraction (certified)")
+        ax2.plot(a_c, sav_c, "^-", color="#2ca02c", label="cost saved (certified)")
     ax2.set_ylabel("routed fraction / cost saved", color="#2a7ae2")
     ax2.tick_params(axis="y", labelcolor="#2a7ae2")
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
-    ax1.set_title("α-sweep: cost-savings vs risk frontier")
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=8)
+    title = "α-sweep: cost-savings vs risk frontier"
+    if a_abst:
+        first = f"{min(a_c):.2f}" if a_c else "—"
+        title += f"\n(certifies from α = {first}; lighter α's abstain)"
+    ax1.set_title(title)
     fig.tight_layout()
     path = os.path.join(outdir, fname)
     fig.savefig(path, dpi=150)

@@ -1,0 +1,7 @@
+{
+  "json_path": "baselines/RouteLLM/data/ltt_perfcost_seed42/pairwise_train.json",
+  "npy_path": "baselines/RouteLLM/data/ltt_perfcost_seed42/prompt_embeddings.npy",
+  "dim": 384, "use_proj": false, "batch_size": 64, "num_epochs": 30,
+  "alpha": 0.1, "lr": 3e-4, "weight_decay": 1e-5, "device": "cpu",
+  "save_path": "baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/mf_model.pt"
+}

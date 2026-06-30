@@ -20,6 +20,7 @@ import numpy as np
 from baselines.ltt_router.protocols import ModelSpec, QueryRecord
 from baselines.ltt_router.splitting import three_way_split
 from baselines.ltt_router.routers.embedding_lr import build_embedding_lr_router, EmbedFn
+from baselines.ltt_router.routers.routellm_mf import build_routellm_mf_router
 from baselines.ltt_router.core.routing import Router, RouterPlan
 from baselines.ltt_router.core.calibration import MIN_ROUTED_DEFAULT
 
@@ -130,6 +131,9 @@ class LTTAdaptor:
         delta: float = 0.10,
         apply_pareto: bool = True,
         embed_fn: Optional[EmbedFn] = None,
+        scorer_kind: str = "embedding_lr",
+        mf_checkpoint: Optional[str] = None,
+        mf_calibrators: Optional[dict] = None,
         models_subset: Optional[List[str]] = None,
         min_routed: int = MIN_ROUTED_DEFAULT,
         records: Optional[Sequence] = None,
@@ -157,7 +161,12 @@ class LTTAdaptor:
         models = build_model_specs(records)
 
         # Train the scorer on TRAIN only.
-        scorer = build_embedding_lr_router(train, models, embed_fn=embed_fn)
+        if scorer_kind == "routellm_mf":
+            if mf_checkpoint is None or mf_calibrators is None:
+                raise ValueError("routellm_mf requires mf_checkpoint and mf_calibrators")
+            scorer = build_routellm_mf_router(models, mf_checkpoint, mf_calibrators, embed_fn=embed_fn)
+        else:
+            scorer = build_embedding_lr_router(train, models, embed_fn=embed_fn)
 
         # Pivot calib + test to QueryRecords (scores from the trained scorer).
         calib_queries = pivot_to_query_records(calib, models, scorer)
