@@ -271,7 +271,10 @@ paper/
 # Official SGI-Bench repo (submodule)
 SGI-Bench/
 mf_model.pt
-baselines/RouteLLm/checkpoints
+baselines/RouteLLM/checkpoints
+baselines/RouteLLM/data/
+*.npy
+*.pkl
 baselines/AvengersPro/multi_view_cluster_router.py
 results/bench_multiturn
 results/embedllm_mf_multiturn
