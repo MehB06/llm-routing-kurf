@@ -74,7 +74,12 @@ baselines/
     │   └── routing.py        # Pareto filter + cost-ordering + the public Router
     ├── routers/              # pluggable scorers (the only trained part)
     │   ├── embedding_lr.py   # the trained scorer (embedding + per-model LR) + caching
-    │   └── random_router.py  # ablation control (safety comes from calibration)
+    │   ├── random_router.py  # ablation control (safety comes from calibration)
+    │   └── routellm_mf.py    # RouteLLM MF scorer + built-in per-model calibration
+    ├── routellm/             # the RouteLLM integration (scripts, config, docs)
+    │   ├── pipeline.py       # offline prep: build-inputs + fit-calibrators
+    │   ├── run_experiment.py # single-seed α-sweep + benchmark point
+    │   └── train_config.json # MF training config (dim=384, use_proj=false)
     ├── eval/                 # measurement, separate from the engine
     │   ├── metrics.py        # two metric blocks (benchmark-comparable + guarantee)
     │   └── benchmark.py      # emit BaselineRecords + benchmark-aggregator metrics
@@ -98,24 +103,24 @@ pip install -r requirements.txt
 
 ```bash
 # tests — no data or model download needed
-python -m pytest baselines/ltt_router/tests/ -v        # 76 passed
+python -m pytest baselines/ltt_router/tests/ -v
 
 # calibrate + route on the benchmark (--verbose prints the calibration loss table)
 python -m baselines.adaptors.ltt_adaptor \
     --config config/baseline_config_performance_cost.yaml \
     --alpha 0.15 --seed 42 --verbose
 
-# generate the experiment figures
+# generate the experiment figures (embedding-LR scorer)
 python -m baselines.ltt_router.experiment \
     --config config/baseline_config_performance_cost.yaml \
     --n-trials 500 \
     --alphas 0.15,0.20,0.25,0.30,0.35,0.40 \
-    --outdir experiments
+    --outdir baselines/ltt_router/experiments
 ```
 
 The experiment writes three PNGs to `experiments/`:
 - `guarantee_histogram.png` — realized-risk distribution over n trials, α line,
-  violation rate (should be ≤ δ); +Pareto vs budget-only overlay.
+  corrected-violation rate (should be ≤ δ); +Pareto vs budget-only overlay.
 - `alpha_sweep.png` — the cost-savings-vs-risk frontier.
 - `benchmark_comparison.png` — our (accuracy, cost) point vs the benchmark
   reference rows and RouteLLM, annotated with the guarantee.
@@ -130,32 +135,24 @@ survivors at this setting: `deepseek-v3-0324`, `gpt-5`, `qwen3-235b-a22b-2507`.
 
 ### The guarantee holds (repeated trials, n = 500)
 
-At α = 0.15, δ = 0.10, realized risk exceeds α on **8.0%** of trials with Pareto
-pre-filtering and **6.0%** budget-only — both within the δ = 10% bound. The mass
-of the realized-risk distribution sits below the α line. See
-`experiments/guarantee_histogram.png`.
+At α = 0.15, δ = 0.10, the pooled true risk is **0.132 ≤ α** and the
+corrected violation rate is **2.3%** with Pareto pre-filtering and **2.1%**
+budget-only — both well within the δ = 10% bound. The mass of the realized-risk
+distribution sits below the α line. See `experiments/guarantee_histogram.png`.
 
 ### Cost-savings vs risk frontier (α-sweep)
 
-| α    | realized risk | routed % | cost saved |
-|------|---------------|----------|------------|
-| 0.15 | ~0.115        | ~31%     | ~16%       |
-| 0.20 | ~0.19         | ~53%     | ~30%       |
-| 0.25 | ~0.225        | ~69%     | ~38%       |
-| 0.30 | ~0.265        | ~84%     | ~53%       |
-| 0.35 | ~0.34         | ~96%     | ~74%       |
-| 0.40 | ~0.39         | ~100%    | ~86%       |
-
 Realized risk stays at or below the α target across the sweep (the guarantee
-holding); the routed fraction and cost savings rise as α loosens. See `experiments/alpha_sweep.png`.
+holding); the routed fraction and cost savings rise as α loosens. See
+`experiments/alpha_sweep.png`.
 
 ### Comparison to baselines
 
 In accuracy/cost space the LTT router sits alongside the strong reference points
 (Max Expert, All-Fallback) at accuracy ≈ 0.59, while carrying a **certified risk
-bound that no other method reports**. RouteLLM achieves higher accuracy at lower
-cost here See
-`experiments/benchmark_comparison.png`.
+bound that no other method reports**. RouteLLM achieves higher unconstrained
+accuracy at lower cost here; see the RouteLLM section below for the head-to-head
+under the guarantee, and `experiments/benchmark_comparison.png`.
 
 ---
 
@@ -175,11 +172,15 @@ probability. Everything below the `RoutingFunction` boundary (split, Pareto, FST
 metrics) is untouched.
 
 ```
-baselines/ltt_router/routers/routellm_mf.py   # MF scorer + built-in calibration (Platt/isotonic)
-baselines/ltt_router/routers/mf_pipeline.py   # offline prep: build-inputs + fit-calibrators
-baselines/ltt_router/plot_routellm_sweep.py   # honest α-sweep (certified vs abstained)
-baselines/ltt_router/run_routellm_experiment.py  # single-seed α-sweep + benchmark point
+routers/routellm_mf.py        # MF scorer + built-in calibration (Platt/isotonic)
+routellm/pipeline.py          # offline prep: build-inputs + fit-calibrators
+routellm/run_experiment.py    # single-seed α-sweep + benchmark point
+routellm/train_config.json    # MF training config
 ```
+
+The α-sweep plot (`experiment.plot_alpha_sweep`) is abstention-aware: it draws
+risk/cost only for *certified* α's and marks abstained α's, so the certification
+frontier is explicit rather than a misleading flat-zero region.
 
 ### Why single-seed (seed 42)
 
@@ -217,16 +218,16 @@ risk-control column none of the baselines report.
 
 ```bash
 # 1. build MF inputs (TRAIN -> train_fit/train_cal, pairwise + embeddings)
-python -m baselines.ltt_router.routers.mf_pipeline build-inputs \
+python -m baselines.ltt_router.routellm.pipeline build-inputs \
     --config config/baseline_config_performance_cost.yaml \
     --out-dir baselines/RouteLLM/data/ltt_perfcost_seed42 --seed 42
 
 # 2. train MF (RouteLLM's trainer, unedited; dim=384, use_proj=false)
 python -m baselines.RouteLLM.routers.matrix_factorization.train_matrix_factorization \
-    --config baselines/RouteLLM/mf_train_config_ltt.json
+    --config baselines/ltt_router/routellm/train_config.json
 
 # 3. fit per-model calibrators (CV-ECE picks Platt/isotonic)
-python -m baselines.ltt_router.routers.mf_pipeline fit-calibrators \
+python -m baselines.ltt_router.routellm.pipeline fit-calibrators \
     --config config/baseline_config_performance_cost.yaml \
     --artifacts-dir baselines/RouteLLM/data/ltt_perfcost_seed42 \
     --checkpoint baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/mf_model.pt \
@@ -234,7 +235,7 @@ python -m baselines.ltt_router.routers.mf_pipeline fit-calibrators \
     --seed 42 --diagram baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/reliability.png
 
 # 4. α-sweep + benchmark point (auto-picks first certifying α)
-python -m baselines.ltt_router.run_routellm_experiment \
+python -m baselines.ltt_router.routellm.run_experiment \
     --config config/baseline_config_performance_cost.yaml \
     --mf-checkpoint baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/mf_model.pt \
     --mf-calibrators baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/calibrators.pkl \
