@@ -3,8 +3,8 @@ LTT adaptor
 
     load -> three-way split (train/calib/test)      
          -> train per-model scorer on TRAIN         
-         -> pivot calib+test groups to QueryRecords 
-         -> Router.fit on CALIB (Pareto + LTT)      
+         -> pivot train/calib/test groups to QueryRecords 
+         -> Router.fit: DESIGN model set on TRAIN, certify λ̂ on CALIB (disjoint)
          -> route TEST QueryRecords                 
 """
 
@@ -20,9 +20,13 @@ import numpy as np
 from baselines.ltt_router.protocols import ModelSpec, QueryRecord
 from baselines.ltt_router.splitting import three_way_split
 from baselines.ltt_router.routers.embedding_lr import build_embedding_lr_router, EmbedFn
-from baselines.ltt_router.routers.routellm_mf import build_routellm_mf_router
 from baselines.ltt_router.core.routing import Router, RouterPlan
 from baselines.ltt_router.core.calibration import MIN_ROUTED_DEFAULT
+
+# NOTE: routellm_mf is imported lazily inside run() (only when scorer_kind ==
+# "routellm_mf"), because it pulls in torch + external checkpoints. Keeping it
+# out of the module top level means the core LTT path imports and tests without
+# those heavy optional dependencies installed.
 
 
 def build_model_specs(records: Sequence) -> List[ModelSpec]:
@@ -30,6 +34,11 @@ def build_model_specs(records: Sequence) -> List[ModelSpec]:
     Derive the N-model universe: name-sorted unique models (stable indices), each
     with cost = mean per-record cost across its rows. Sorting by name gives a
     deterministic, reproducible index map.
+
+    Pass NON-TEST records only (train + calib). Per-record cost can depend on
+    output length, so estimating a model's representative cost from test rows
+    would leak test information into the router; the test split must stay purely
+    held out for final evaluation.
     """
     names = sorted({r.model_name for r in records})
     cost_sums: Dict[str, float] = defaultdict(float)
@@ -48,27 +57,55 @@ def pivot_to_query_records(
     records: Sequence,
     models: List[ModelSpec],
     scorer,
+    success_threshold: float = 1.0,
 ) -> List[QueryRecord]:
     """
-    Group by (dataset_id, prompt); for each group build the N-length arrays with
-    evaluated[i] True only for models that actually have a row. Scores come from
-    the injected scorer (batched over all prompts for efficiency).
+    Group by (dataset_id, record_index) — a STABLE example identifier — and for
+    each group build the N-length arrays with evaluated[i] True only for models
+    that actually have a row. Scores come from the injected scorer (batched over
+    each group's prompt text for efficiency).
+
+    We key on record_index, not prompt text, because templated or repeated
+    prompts would otherwise silently merge distinct benchmark examples into one
+    QueryRecord. The prompt is retained as the scorer's input, not as the key.
+
+    success_threshold:
+        A model's row counts as correct iff score >= success_threshold (default
+        1.0, i.e. exact-correct benchmarks). If any score is non-binary and the
+        threshold was left at its default, we raise: silently thresholding a
+        judge/partial score at 1.0 would misread the benchmark. Pass an explicit
+        threshold to opt into non-binary scoring.
     """
     name_to_index = {m.name: m.index for m in models}
     n_models = len(models)
     cost_by_index = np.array([m.cost for m in models], dtype=float)
 
-    groups: Dict[Tuple[str, str], list] = defaultdict(list)
+    groups: Dict[Tuple[str, int], list] = defaultdict(list)
     for r in records:
-        groups[(r.dataset_id, r.prompt)].append(r)
+        groups[(r.dataset_id, r.record_index)].append(r)
+
+    # Guard against silently thresholding non-binary scores at the default 1.0.
+    if success_threshold == 1.0:
+        for r in records:
+            s = float(r.score)
+            if s not in (0.0, 1.0):
+                raise ValueError(
+                    f"Non-binary score {s!r} found (dataset={r.dataset_id}, "
+                    f"record_index={r.record_index}, model={r.model_name}) but "
+                    "success_threshold is at its default 1.0. Pass an explicit "
+                    "success_threshold to define correctness for non-binary scores."
+                )
 
     keys = list(groups.keys())
-    prompts = [prompt for (_ds, prompt) in keys]
+    # One representative prompt per group (all rows in a group share the example).
+    prompts = [groups[k][0].prompt for k in keys]
     score_matrix = scorer.score_batch(prompts)   # [G, N]
 
     query_records: List[QueryRecord] = []
-    for gi, (ds_id, prompt) in enumerate(keys):
-        group = groups[(ds_id, prompt)]
+    for gi, key in enumerate(keys):
+        ds_id, _rec_idx = key
+        group = groups[key]
+        prompt = group[0].prompt
         correct = np.zeros(n_models, dtype=int)
         evaluated = np.zeros(n_models, dtype=bool)
         cost = cost_by_index.copy()              # default to model's mean cost
@@ -77,7 +114,7 @@ def pivot_to_query_records(
             if idx is None:
                 continue                          # model not in universe (shouldn't happen)
             evaluated[idx] = True
-            correct[idx] = int(r.score == 1.0)
+            correct[idx] = int(float(r.score) >= success_threshold)
             cost[idx] = float(r.cost)             # prefer the real per-query cost
         if not evaluated.any():
             continue                              # skip empty groups
@@ -137,6 +174,7 @@ class LTTAdaptor:
         models_subset: Optional[List[str]] = None,
         min_routed: int = MIN_ROUTED_DEFAULT,
         records: Optional[Sequence] = None,
+        success_threshold: float = 1.0,
     ) -> AdaptorResult:
         """
         Load -> split -> train scorer -> calibrate -> route the test set.
@@ -146,6 +184,12 @@ class LTTAdaptor:
         models_subset:  restrict to these model names. None = all models in the data.
         min_routed:     power floor for FST eligibility (see calibration.py).
         records:        pre-loaded records (tests). None = load from benchmark.
+        success_threshold:
+            Correctness cutoff for graded/judge scores: a row is a success iff
+            score >= this. Default 1.0 assumes binary benchmarks and RAISES on any
+            non-binary score, so a graded dataset (e.g. ArenaHard) must opt in
+            with an explicit threshold. The same value trains the scorer and
+            scores calibration/test, keeping one consistent definition of success.
         """
         if records is None:
             records = self._load_records()
@@ -158,25 +202,35 @@ class LTTAdaptor:
             records, self.train_frac, self.calib_frac, self.seed
         )
 
-        models = build_model_specs(records)
+        # Model universe + representative costs from NON-TEST rows only (#6):
+        # test stays fully held out.
+        models = build_model_specs(train + calib)
 
         # Train the scorer on TRAIN only.
         if scorer_kind == "routellm_mf":
             if mf_checkpoint is None or mf_calibrators is None:
                 raise ValueError("routellm_mf requires mf_checkpoint and mf_calibrators")
+            # Lazy import: pulls in torch + checkpoints only when actually used.
+            from baselines.ltt_router.routers.routellm_mf import build_routellm_mf_router
             scorer = build_routellm_mf_router(models, mf_checkpoint, mf_calibrators, embed_fn=embed_fn)
         else:
-            scorer = build_embedding_lr_router(train, models, embed_fn=embed_fn)
+            scorer = build_embedding_lr_router(
+                train, models, embed_fn=embed_fn, success_threshold=success_threshold
+            )
 
-        # Pivot calib + test to QueryRecords (scores from the trained scorer).
-        calib_queries = pivot_to_query_records(calib, models, scorer)
-        test_queries = pivot_to_query_records(test, models, scorer)
+        # Pivot to QueryRecords (scores from the trained scorer). The DESIGN split
+        # (from train) picks the Pareto survivors / fallback; CALIB is reserved
+        # for the LTT hypothesis test; TEST is the held-out evaluation.
+        design_queries = pivot_to_query_records(train, models, scorer, success_threshold)
+        calib_queries = pivot_to_query_records(calib, models, scorer, success_threshold)
+        test_queries = pivot_to_query_records(test, models, scorer, success_threshold)
 
-        # Calibrate on CALIB (Pareto + cost-order + LTT).
+        # Design the action set on TRAIN, certify λ̂ on CALIB (disjoint).
         router = Router(scorer)
         plan = router.fit(
             calib_queries, alpha=alpha, delta=delta,
             apply_pareto=apply_pareto, min_routed=min_routed,
+            design_queries=design_queries,
         )
 
         # Route the held-out TEST queries.
@@ -210,6 +264,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--delta", type=float, default=0.10, help="LTT failure prob")
     parser.add_argument("--no-pareto", action="store_true", help="budget-only ablation")
     parser.add_argument("--models", default="", help="comma-separated model subset")
+    parser.add_argument("--success-threshold", type=float, default=1.0,
+                        help="correctness cutoff for graded scores (default 1.0; "
+                             "raises on non-binary scores unless set, e.g. 0.5 for ArenaHard)")
     parser.add_argument("--verbose", action="store_true",
                         help="print the calibration loss table (risk/n/p per λ) for diagnosis")
     args = parser.parse_args(argv)
@@ -227,6 +284,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         delta=args.delta,
         apply_pareto=not args.no_pareto,
         models_subset=subset,
+        success_threshold=args.success_threshold,
     )
 
     from baselines.ltt_router.eval.metrics import evaluate, format_report

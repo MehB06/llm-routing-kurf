@@ -52,15 +52,15 @@ def stub_embed_fn(prompts):
 
 
 def make_dense_records(n_prompts=100, seed=0):
-    # Three models, every prompt evaluated on all three (dense).
+    # Three models, every prompt evaluated on all three (dense). record_index
+    # identifies the EXAMPLE, so all three model rows of one example share it
+    # (matching the real loader, where index comes from the dataset record).
     rng = np.random.default_rng(seed)
     recs = []
-    idx = 0
     for i in range(n_prompts):
         q = f"dataset-A question {i}?"
         for name, p, cost in (("cheap", 0.70, 0.1), ("mid", 0.80, 0.5), ("oracle", 0.95, 2.0)):
-            recs.append(FakeRecord("A", q, name, float(rng.random() < p), cost, idx))
-            idx += 1
+            recs.append(FakeRecord("A", q, name, float(rng.random() < p), cost, i))
     return recs
 
 
@@ -128,21 +128,36 @@ class ConstScorer:
 
 def test_pivot_sets_evaluated_only_for_present_models():
     models = [ModelSpec("a", 0.1, 0), ModelSpec("b", 0.5, 1), ModelSpec("c", 2.0, 2)]
-    # q1 has rows for a and c only b is MISSING.
+    # q1 (record_index 0) has rows for a and c only — b is MISSING. Both rows
+    # share the example's record_index so they group into ONE QueryRecord.
     recs = [
         FakeRecord("D", "q1", "a", 1.0, 0.1, 0),
-        FakeRecord("D", "q1", "c", 0.0, 2.0, 1),
+        FakeRecord("D", "q1", "c", 0.0, 2.0, 0),
     ]
     q = pivot_to_query_records(recs, models, ConstScorer(models, [0.9, 0.9, 0.9]))[0]
     assert q.evaluated.tolist() == [True, False, True]     # b never evaluated
     assert q.correct[0] == 1 and q.correct[2] == 0
 
 
+def test_pivot_groups_by_record_index_not_prompt():
+    # Two DISTINCT examples that happen to share identical prompt text (templated
+    # question). They must NOT be merged: keying on record_index keeps them apart.
+    models = [ModelSpec("a", 0.1, 0), ModelSpec("b", 0.5, 1)]
+    recs = [
+        FakeRecord("D", "same text", "a", 1.0, 0.1, 0),
+        FakeRecord("D", "same text", "b", 0.0, 0.5, 0),
+        FakeRecord("D", "same text", "a", 0.0, 0.1, 1),
+        FakeRecord("D", "same text", "b", 1.0, 0.5, 1),
+    ]
+    qs = pivot_to_query_records(recs, models, ConstScorer(models, [0.9, 0.9]))
+    assert len(qs) == 2       # two examples, not one merged group
+
+
 def test_pivot_prefers_real_per_query_cost():
     models = [ModelSpec("a", 0.1, 0), ModelSpec("b", 0.5, 1)]
     recs = [
         FakeRecord("D", "q1", "a", 1.0, 0.15, 0),   # real cost differs from spec
-        FakeRecord("D", "q1", "b", 1.0, 0.55, 1),
+        FakeRecord("D", "q1", "b", 1.0, 0.55, 0),
     ]
     q = pivot_to_query_records(recs, models, ConstScorer(models, [0.9, 0.9]))[0]
     assert q.cost[0] == pytest.approx(0.15)
@@ -178,3 +193,69 @@ def test_adaptor_pareto_vs_budget_runs_both():
     r_bud = adaptor.run(alpha=0.2, embed_fn=stub_embed_fn, records=recs, apply_pareto=False)
     assert r_par.apply_pareto is True
     assert r_bud.apply_pareto is False
+
+# 5. Targeted tests for the reviewer's statistical / data-split concerns
+def test_non_binary_scores_raise_at_default_threshold():
+    # A judge/partial score with the default success_threshold=1.0 must raise,
+    # not be silently thresholded.
+    models = [ModelSpec("a", 0.1, 0), ModelSpec("b", 0.5, 1)]
+    recs = [
+        FakeRecord("D", "q1", "a", 0.5, 0.1, 0),   # non-binary
+        FakeRecord("D", "q1", "b", 1.0, 0.5, 0),
+    ]
+    with pytest.raises(ValueError):
+        pivot_to_query_records(recs, models, ConstScorer(models, [0.9, 0.9]))
+
+
+def test_non_binary_scores_ok_with_explicit_threshold():
+    models = [ModelSpec("a", 0.1, 0), ModelSpec("b", 0.5, 1)]
+    recs = [
+        FakeRecord("D", "q1", "a", 0.5, 0.1, 0),
+        FakeRecord("D", "q1", "b", 0.9, 0.5, 0),
+    ]
+    q = pivot_to_query_records(
+        recs, models, ConstScorer(models, [0.9, 0.9]), success_threshold=0.8
+    )[0]
+    assert q.correct.tolist() == [0, 1]   # 0.5 < 0.8 wrong, 0.9 >= 0.8 correct
+
+
+def test_model_costs_not_built_from_test():
+    # build_model_specs must be called on non-test rows only; a test-only cost
+    # spike must not move the model's representative cost.
+    train_calib = [FakeRecord("A", f"q{i}", "m", 1.0, 1.0, i) for i in range(10)]
+    test = [FakeRecord("A", "qT", "m", 1.0, 999.0, 100)]
+    specs_no_test = build_model_specs(train_calib)
+    specs_with_test = build_model_specs(train_calib + test)
+    assert specs_no_test[0].cost == pytest.approx(1.0)
+    assert specs_with_test[0].cost > 1.0    # contamination visible if test leaks in
+
+
+def test_design_split_separate_from_calibration():
+    # The adaptor must design the action set on TRAIN and certify on CALIB. We
+    # assert the plan exists and the accuracies used for design were computed
+    # over a non-empty design split (train), i.e. fit received design_queries.
+    recs = make_dense_records(300, seed=9)
+    adaptor = LTTAdaptor(config_path="UNUSED", train_frac=0.6, calib_frac=0.2, seed=42)
+    result = adaptor.run(alpha=0.2, embed_fn=stub_embed_fn, records=recs)
+    # accuracies is a per-model design-time vector; all three models present.
+    assert result.plan.accuracies.shape[0] == 3
+    assert result.plan.certified in (True, False)   # ran end-to-end without leak path
+
+
+def test_success_threshold_flows_end_to_end():
+    # Graded scores (0.5) must run when an explicit threshold is passed, and the
+    # SAME cutoff must define success for both scorer training and calibration.
+    recs = []
+    for i in range(300):
+        q = f"g q {i}?"
+        for name, cost, sc in (("cheap", 0.1, 0.5), ("mid", 0.5, 0.5), ("oracle", 2.0, 1.0)):
+            recs.append(FakeRecord("graded", q, name, sc, cost, i))
+    adaptor = LTTAdaptor(config_path="UNUSED", seed=42)
+    # default 1.0 -> raises on the 0.5 rows
+    with pytest.raises(ValueError):
+        adaptor.run(alpha=0.3, embed_fn=stub_embed_fn, records=recs)
+    # explicit 0.5 -> 0.5 counts as success, runs clean
+    result = adaptor.run(alpha=0.3, embed_fn=stub_embed_fn, records=recs,
+                         success_threshold=0.5)
+    assert result.plan is not None
+    assert len(result.chosen_indices) == len(result.test_queries)

@@ -2,19 +2,23 @@
 LTT calibration 
 
 It is training-free: nothing here is fitted by gradient descent. Instead it runs a 
-hypothesis test on held-out calibration data and certifies a threshold whose true 
-risk is provably ≤ α with probability ≥ 1 − δ.
+hypothesis test on held-out calibration data and certifies a threshold whose
+POPULATION risk is ≤ α with probability ≥ 1 − δ over the calibration draw. (The
+test set is only an empirical diagnostic; a finite test split may sit above α by
+sampling noise without violating the guarantee.)
 
 
 We calibrate a SINGLE SCALAR threshold λ, applied uniformly: a query may be
 routed to model i iff that model's score clears λ. We do NOT (yet) calibrate a
 per-model threshold vector.
 
-Empirical risk is monotone DECREASING in λ. The certified region is therefore a
-contiguous PREFIX of the sequence ordered from the SAFE end (high λ) toward the
+We test λ values in a FIXED ORDER, from the SAFE end (high λ) toward the
 PERMISSIVE end (low λ). FST walks that fixed order, rejecting "λ is unsafe" while
 p ≤ δ and STOPPING at the first failure; λ̂ is the last (most permissive,
-most cost-saving) λ it rejected.
+most cost-saving) λ it rejected. FST controls the family-wise error over this
+ordered sequence REGARDLESS of whether risk is monotone in λ — we do not rely on
+monotonicity, which need not hold for a conditional (selective-routing) risk
+whose denominator changes with λ.
 """
 
 from __future__ import annotations
@@ -30,11 +34,12 @@ from baselines.ltt_router.core.loss import regret_loss
 
 
 # Minimum number of cheap-routed calibration queries required for a candidate λ
-# to be eligible for testing. Below this the binomial p-value is noisy, and a
-# noisy small-n p-value at the SAFE (high-λ) end can break the FST chain early
-# (FST stops at first failure) -> certifies nothing (the realized-risk-0 spike).
-# Raised 100 -> 200 after an empirical sweep: 200 maximised the certification rate.
-# This filter is data-independent (n depends on scores, not outcomes), so it preserves FWER ≤ δ.
+# to be eligible for testing. Below this the binomial p-value is too noisy to act
+# on: a small-n fluke at the SAFE (high-λ) end can end the FST chain early and
+# certify nothing. This is a pre-specified minimum effective sample size for the
+# routed-query risk estimate. It is data-independent (n depends on scores, not
+# outcomes), so filtering on it preserves FWER ≤ δ. See the sensitivity analysis
+# (50 / 100 / 200) in the results for robustness to this choice.
 MIN_ROUTED_DEFAULT = 200
 
 

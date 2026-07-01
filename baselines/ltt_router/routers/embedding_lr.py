@@ -92,15 +92,18 @@ class CachingEmbedder:
         return np.asarray([self._cache[p] for p in prompts])
 
 # Building the per-model training data
-def _per_model_examples(train_records: Sequence, model_name: str):
+def _per_model_examples(train_records: Sequence, model_name: str, success_threshold: float = 1.0):
     """
     Pull (prompt, success) pairs for one model from the train split.
-    Deterministic ordering for reproducibility 
+    Deterministic ordering for reproducibility. A row counts as a success iff
+    score >= success_threshold, matching the correctness definition the adaptor
+    uses when it pivots calibration/test records (so the scorer is trained to
+    predict exactly the success the guarantee certifies).
     """
     rows = [r for r in train_records if r.model_name == model_name]
     rows.sort(key=lambda r: (r.dataset_id, r.record_index))
     prompts = [r.prompt for r in rows]
-    labels = np.array([int(r.score == 1.0) for r in rows])
+    labels = np.array([int(float(r.score) >= success_threshold) for r in rows])
     return prompts, labels
 
 # The router
@@ -158,6 +161,7 @@ def build_embedding_lr_router(
     C: float = 1.0,
     max_iter: int = 1000,
     verbose: bool = False,
+    success_threshold: float = 1.0,
 ) -> EmbeddingLRRouter:
     """
     Train one logistic regression per model on the TRAIN split only.
@@ -172,6 +176,10 @@ def build_embedding_lr_router(
         stub in tests.
     C, max_iter:
         Logistic-regression hyperparameters.
+    success_threshold:
+        A train row counts as a success iff score >= this. Must match the
+        threshold the adaptor uses when pivoting calib/test, so the scorer learns
+        the same notion of success that gets certified.
     """
     from sklearn.linear_model import LogisticRegression
 
@@ -180,7 +188,7 @@ def build_embedding_lr_router(
 
     classifiers = {}
     for m in models:
-        prompts, labels = _per_model_examples(train_records, m.name)
+        prompts, labels = _per_model_examples(train_records, m.name, success_threshold)
         if len(prompts) == 0:
             if verbose:
                 print(f"[scorer] {m.name}: no train rows, skipping")

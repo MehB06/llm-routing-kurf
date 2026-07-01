@@ -35,7 +35,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                     help="α for the single benchmark point")
     ap.add_argument("--delta", type=float, default=0.10)
     ap.add_argument("--alphas", default="0.10,0.15,0.20,0.25,0.30,0.35")
-    ap.add_argument("--outdir", default="baselines/ltt_router/experiments")
+    ap.add_argument("--outdir", default="results/ltt_router")
+    ap.add_argument("--success-threshold", type=float, default=1.0,
+                    help="correctness cutoff for graded scores (default 1.0; "
+                         "set e.g. 0.5 when the pool includes judge-scored datasets)")
     args = ap.parse_args(argv)
 
     from baselines.adaptors.ltt_adaptor import LTTAdaptor
@@ -57,7 +60,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         ad = LTTAdaptor(config_path=args.config, seed=args.seed)
         return ad.run(alpha=a, delta=args.delta, records=records, embed_fn=embedder,
                       scorer_kind="routellm_mf",
-                      mf_checkpoint=args.mf_checkpoint, mf_calibrators=calmap)
+                      mf_checkpoint=args.mf_checkpoint, mf_calibrators=calmap,
+                      success_threshold=args.success_threshold)
 
     # 1. α-sweep: the certification frontier.
     print("[1/2] α-sweep (certification frontier) ...")

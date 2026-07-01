@@ -228,3 +228,50 @@ def test_router_route_never_returns_unevaluated_model():
                     np.array([0.1, 0.5, 2.0]), np.array([True, True, False]))
     chosen = router.route(q)
     assert q.evaluated[chosen]
+
+# 5. Active-route semantics (reviewer #4): a deferral to fallback (nothing cleared
+#    λ) must NOT count as an active route; a model clearing λ IS an active route,
+#    even if it is the most-capable/fallback model. This documents the intended
+#    denominator and guards against the proposed (incorrect) candidate_order fix.
+def test_deferral_not_counted_as_active_route():
+    from baselines.ltt_router.core.calibration import is_active_route
+    cost_order = np.array([0, 1])   # 0 cheap, 1 capable/fallback
+    # No model's score clears a high λ -> this is a deferral, not an active route.
+    q = QueryRecord(
+        scores=np.array([0.2, 0.3]),
+        correct=np.array([0, 1]),
+        cost=np.array([0.1, 2.0]),
+        evaluated=np.array([True, True]),
+    )
+    assert is_active_route(q, lam=0.9, cost_order=cost_order) is False
+
+
+def test_model_clearing_lambda_is_active_route():
+    from baselines.ltt_router.core.calibration import is_active_route
+    cost_order = np.array([0, 1])
+    # The cheap model clears λ -> active route.
+    q = QueryRecord(
+        scores=np.array([0.95, 0.0]),
+        correct=np.array([1, 1]),
+        cost=np.array([0.1, 2.0]),
+        evaluated=np.array([True, True]),
+    )
+    assert is_active_route(q, lam=0.9, cost_order=cost_order) is True
+
+
+def test_fit_uses_design_queries_for_action_set():
+    # Design accuracies must come from design_queries, not calib. We make the two
+    # splits disagree on which model looks best and check the fallback follows the
+    # DESIGN split.
+    models = [ModelSpec("cheap", 0.1, 0), ModelSpec("oracle", 2.0, 1)]
+    router = Router(ScriptedScorer(models))
+
+    def q(cheap_ok, oracle_ok):
+        return QueryRecord(np.array([0.95, 0.0]), np.array([cheap_ok, oracle_ok]),
+                           np.array([0.1, 2.0]), np.array([True, True]))
+
+    # Design: oracle clearly most accurate -> fallback should be oracle (idx 1).
+    design = [q(0, 1) for _ in range(200)]
+    calib = [q(1, 1) for _ in range(300)]
+    plan = router.fit(calib, alpha=0.2, design_queries=design, apply_pareto=False)
+    assert plan.fallback_idx == 1

@@ -2,13 +2,16 @@
 
 A routing framework that delegates each query to the **cheapest model that is
 *certified* safe**, using the Learn-Then-Test (LTT) statistical procedure. Unlike
-the other baselines in this benchmark, it has a **formal guarantee**: the
-realized regret of the routing rule stays ≤ α with probability ≥ 1−δ.
+the other baselines in this benchmark, it has a **formal guarantee**: LTT gives a
+high-probability bound on the *population* regret of the calibrated routing rule
+— with probability ≥ 1−δ over the calibration draw, the rule's true regret is
+≤ α. (A finite test split is only a diagnostic and may sit above α by sampling
+noise without violating the guarantee.)
 
-It generalises the validated two-model proof-of-concept in `baselines/ltt_v1/`
-to N models, with a router-agnostic calibration core and a thin adaptor that lets
-it stand beside the existing LLMRouterBench baselines on their metrics while
-reporting the guarantee column none of them have.
+It generalises a validated two-model proof-of-concept to N models, with a
+router-agnostic calibration core and a thin adaptor that lets it stand beside the
+existing LLMRouterBench baselines on their metrics while reporting the guarantee
+column none of them have.
 
 ---
 
@@ -48,15 +51,17 @@ scores
 
 Expensive ≠ better, so the rule does **not** assume the most expensive model is best:
 
-1. **Pareto pre-filter** (offline, on calibration data only): drop any model that
-   is dominated (some other model is both cheaper *and* at least as accurate. A
-   dominated model can never be the right choice.)
+1. **Pareto pre-filter** (offline, on the **design split** — carved from train,
+   disjoint from calibration): drop any model that is dominated (some other model
+   is both cheaper *and* at least as accurate. A dominated model can never be the
+   right choice.) Designing the action set on train keeps the calibration labels
+   reserved solely for the LTT hypothesis test.
 2. **Cost ordering**: sort survivors cheapest → most expensive.
 3. **Cheapest-safe routing**: walk survivors cheapest-first, take the first whose
    score clears λ̂; else defer to the most capable *evaluated* model.
 
-LTT certifies the single scalar λ̂ so the realized regret of this whole rule
-stays ≤ α with probability ≥ 1−δ.
+LTT certifies the single scalar λ̂ so the *population* regret of this whole rule
+is ≤ α with probability ≥ 1−δ.
 
 ---
 
@@ -65,7 +70,7 @@ stays ≤ α with probability ≥ 1−δ.
 ```
 baselines/
 ├── adaptors/
-│   └── ltt_adaptor.py        # benchmark bridge: load -> split -> train -> calibrate -> route
+│   └── ltt_adaptor.py        # benchmark bridge: load -> split -> train -> design+calibrate -> route
 └── ltt_router/
     ├── protocols.py          # ModelSpec, QueryRecord, RoutingFunction contracts
     ├── core/                 # the risk-controlled engine (the contribution)
@@ -74,9 +79,8 @@ baselines/
     │   └── routing.py        # Pareto filter + cost-ordering + the public Router
     ├── routers/              # pluggable scorers (the only trained part)
     │   ├── embedding_lr.py   # the trained scorer (embedding + per-model LR) + caching
-    │   ├── random_router.py  # ablation control (safety comes from calibration)
-    │   └── routellm_mf.py    # RouteLLM MF scorer + built-in per-model calibration
-    ├── routellm/             # the RouteLLM integration (scripts, config, docs)
+    │   └── routellm_mf.py    
+    ├── routellm/             # the optional RouteLLM integration (scripts, config, docs)
     │   ├── pipeline.py       # offline prep: build-inputs + fit-calibrators
     │   ├── run_experiment.py # single-seed α-sweep + benchmark point
     │   └── train_config.json # MF training config (dim=384, use_proj=false)
@@ -86,7 +90,13 @@ baselines/
     ├── splitting.py          # three-way (train/calib/test) prompt-level split
     ├── experiment.py         # repeated-trials harness + α-sweep + figures
     └── tests/                # synthetic data + stub embedder, no downloads
+
+results/ltt_router/           # generated figures (reproduced by experiment.py)
 ```
+
+The core LTT path (`core/`, `routers/embedding_lr.py`, the adaptor) imports and
+tests with **no torch** installed; the RouteLLM MF scorer is optional and pulled
+in only when `scorer_kind="routellm_mf"` is selected.
 
 ---
 
@@ -115,13 +125,14 @@ python -m baselines.ltt_router.experiment \
     --config config/baseline_config_performance_cost.yaml \
     --n-trials 500 \
     --alphas 0.15,0.20,0.25,0.30,0.35,0.40 \
-    --outdir baselines/ltt_router/experiments
+    --outdir results/ltt_router
 ```
 
-The experiment writes three PNGs to `experiments/`:
+The experiment writes three PNGs to `results/ltt_router/`:
 - `guarantee_histogram.png` — realized-risk distribution over n trials, α line,
   corrected-violation rate (should be ≤ δ); +Pareto vs budget-only overlay.
-- `alpha_sweep.png` — the cost-savings-vs-risk frontier.
+- `alpha_sweep.png` — the cost-savings-vs-risk frontier, with routed and fallback
+  fractions per α.
 - `benchmark_comparison.png` — our (accuracy, cost) point vs the benchmark
   reference rows and RouteLLM, annotated with the guarantee.
 
@@ -129,22 +140,25 @@ The experiment writes three PNGs to `experiments/`:
 
 ## Results
 
-13 flagship models, 10 datasets, 161,520 records; three-way prompt-level split
-(60/20/20); δ = 0.10; embedding + per-model logistic-regression scorer. Pareto
-survivors at this setting: `deepseek-v3-0324`, `gpt-5`, `qwen3-235b-a22b-2507`.
+13 flagship models, 10 datasets, 161,520 records; prompt-level split into
+train / calibration / test (60/20/20). The action set (Pareto survivors,
+fallback) is designed on a split carved from train, so calibration labels are
+used only for the LTT test. δ = 0.10; embedding + per-model logistic-regression
+scorer. Pareto survivors at this setting: `deepseek-v3-0324`, `gpt-5`,
+`qwen3-235b-a22b-2507`.
 
 ### The guarantee holds (repeated trials, n = 500)
 
-At α = 0.15, δ = 0.10, the pooled true risk is **0.132 ≤ α** and the
+At α = 0.15, δ = 0.10, the pooled test-risk estimate is **0.132 ≤ α** and the
 corrected violation rate is **2.3%** with Pareto pre-filtering and **2.1%**
 budget-only — both well within the δ = 10% bound. The mass of the realized-risk
-distribution sits below the α line. See `experiments/guarantee_histogram.png`.
+distribution sits below the α line. See `results/ltt_router/guarantee_histogram.png`.
 
 ### Cost-savings vs risk frontier (α-sweep)
 
 Realized risk stays at or below the α target across the sweep (the guarantee
 holding); the routed fraction and cost savings rise as α loosens. See
-`experiments/alpha_sweep.png`.
+`results/ltt_router/alpha_sweep.png`.
 
 ### Comparison to baselines
 
@@ -152,7 +166,7 @@ In accuracy/cost space the LTT router sits alongside the strong reference points
 (Max Expert, All-Fallback) at accuracy ≈ 0.59, while carrying a **certified risk
 bound that no other method reports**. RouteLLM achieves higher unconstrained
 accuracy at lower cost here; see the RouteLLM section below for the head-to-head
-under the guarantee, and `experiments/benchmark_comparison.png`.
+under the guarantee, and `results/ltt_router/benchmark_comparison.png`.
 
 ---
 
@@ -200,6 +214,12 @@ held-out `train_cal` slice and the better is chosen by **cross-validated ECE**
 (in-sample ECE would let isotonic overfit to a fake ~0). Mean ECE drops from
 ~0.075 (raw `sigmoid(δ)`) to ~0.03 (calibrated).
 
+Note the reliability diagram (`reliability.png`) is a **secondary** diagnostic of
+the scorer's probability calibration. It is *not* the risk guarantee — the
+guarantee comes from LTT calibration on held-out data, not from probability
+calibration. Probability calibration only improves routing efficiency (how many
+queries can safely clear a useful λ); it does not itself control risk.
+
 ### The certification frontier
 
 The cheapest Pareto survivor (`deepseek-v3-0324`) is only ≈40% accurate, so at
@@ -240,7 +260,7 @@ python -m baselines.ltt_router.routellm.run_experiment \
     --mf-checkpoint baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/mf_model.pt \
     --mf-calibrators baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/calibrators.pkl \
     --alpha 0.25 --alphas 0.15,0.20,0.22,0.25,0.30,0.35 \
-    --outdir baselines/ltt_router/experiments
+    --outdir results/ltt_router
 ```
 
 Writes `alpha_sweep_routellm.png` (certification frontier) and

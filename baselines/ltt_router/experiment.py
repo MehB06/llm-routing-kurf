@@ -13,7 +13,7 @@ Three experiments, each writing a PNG into an output dir
      risk, so comparing each trial's test risk to alpha is NOT a valid check (it
      sits near 50% even when every certified threshold is genuinely safe). We
      therefore validate with:
-       - pooled_true_risk: pool routed queries across all trials -> low-variance
+       - pooled_test_risk_estimate: pool routed queries across all trials -> low-variance
          estimate of the true risk the guarantee actually bounds (must be ≤ α).
        - corrected_violation_rate: count a trial only when its test data shows,
          with confidence, that its true risk exceeds α (must stay ≤ δ).
@@ -39,7 +39,7 @@ import numpy as np
 from baselines.ltt_router.eval.metrics import evaluate, EvalResult, load_baseline_results
 
 
-DEFAULT_OUTDIR = "baselines/ltt_router/experiments"
+DEFAULT_OUTDIR = "results/ltt_router"
 
 
 def _ensure_outdir(outdir: str) -> str:
@@ -108,23 +108,28 @@ def raw_violation_rate(outcomes: List[TrialOutcome], alpha: float) -> float:
     alpha. This is NOT the guarantee: the LTT promise bounds the TRUE (population)
     risk, and a fresh finite test draw scatters around it, so this can sit near
     50% even when every certified threshold is genuinely safe. Use
-    pooled_true_risk / corrected_violation_rate to judge the guarantee.
+    pooled_test_risk_estimate / corrected_violation_rate to judge the guarantee.
     """
     risks = np.array([o.realized_risk for o in outcomes])
     return float(np.mean(risks > alpha)) if len(risks) else 0.0
 
 
-def pooled_true_risk(outcomes: List[TrialOutcome]) -> float:
+def pooled_test_risk_estimate(outcomes: List[TrialOutcome]) -> float:
     """
-    Estimate the TRUE risk of the certified rule by pooling routed queries across
-    ALL trials (total regret events / total routed queries). With n=500 trials
-    this denominator is large, so this is a low-variance estimate of the
-    population risk the guarantee actually bounds. The guarantee holds iff this
-    pooled estimate is ≤ alpha.
+    Estimate the risk of the certified rule by pooling routed queries across ALL
+    trials (total regret events / total routed queries). With n=500 trials this
+    denominator is large, so this is a low-variance ESTIMATE of the population
+    risk the guarantee bounds — it is still an empirical test-set quantity, not
+    the true population risk itself. The guarantee is consistent with this pooled
+    estimate sitting at or below alpha.
     """
     nf = sum(o.n_routed_fail for o in outcomes)
     nn = sum(o.n_routed for o in outcomes)
     return float(nf / nn) if nn else 0.0
+
+
+# Backward-compatible alias (older scripts/tests import the previous name).
+pooled_true_risk = pooled_test_risk_estimate
 
 
 def _risk_lower_bound(n_fail: int, n: int, delta: float) -> float:
@@ -179,7 +184,7 @@ def plot_guarantee_histogram(
     n_abstain = n_total - len(certifying)
 
     rp = np.array([o.realized_risk for o in certifying])
-    true_p = pooled_true_risk(outcomes_pareto)
+    pooled_p = pooled_test_risk_estimate(outcomes_pareto)
     cv_p = corrected_violation_rate(outcomes_pareto, alpha, delta)
 
     if len(rp):
@@ -187,17 +192,17 @@ def plot_guarantee_histogram(
                 label=f"certifying trials (n={len(rp)})")
 
     ax.axvline(alpha, color="#d62728", linestyle="--", linewidth=2, label=f"α = {alpha}")
-    ax.axvline(true_p, color="#1a1a1a", linestyle=":", linewidth=2,
-               label=f"pooled true risk = {true_p:.3f}")
+    ax.axvline(pooled_p, color="#1a1a1a", linestyle=":", linewidth=2,
+               label=f"pooled test-risk estimate = {pooled_p:.3f}")
 
     # Caption: the numbers that actually decide the guarantee, plus abstention count.
-    caption = (f"pooled true risk {true_p:.3f} ≤ α = {alpha}   |   "
+    caption = (f"pooled test-risk estimate {pooled_p:.3f} ≤ α = {alpha}   |   "
                f"corrected violations {cv_p:.1%} ≤ δ = {delta:.0%}")
     if n_abstain:
         caption += f"\n{n_abstain}/{n_total} trials abstained (certified nothing, excluded from histogram)"
     if outcomes_budget is not None:
-        true_b = pooled_true_risk(outcomes_budget)
-        caption += f"\nbudget-only pooled true risk {true_b:.3f} (≈ Pareto; shown for reference)"
+        pooled_b = pooled_test_risk_estimate(outcomes_budget)
+        caption += f"\nbudget-only pooled test-risk estimate {pooled_b:.3f} (≈ Pareto; shown for reference)"
 
     ax.set_xlabel("realized risk on test split (certifying trials)")
     ax.set_ylabel("number of trials")
@@ -402,6 +407,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--alphas", default="0.10,0.15,0.20,0.25,0.30,0.35",
                         help="comma-separated alphas for the sweep")
     parser.add_argument("--models", default="", help="comma-separated model subset")
+    parser.add_argument("--success-threshold", type=float, default=1.0,
+                        help="correctness cutoff for graded scores (default 1.0; "
+                             "set e.g. 0.5 when the pool includes judge-scored datasets)")
     args = parser.parse_args(argv)
 
     from baselines.adaptors.ltt_adaptor import LTTAdaptor
@@ -428,17 +436,18 @@ def main(argv: Optional[List[str]] = None) -> None:
     def make_result(seed: int, apply_pareto: bool):
         ad = LTTAdaptor(config_path=args.config, seed=seed)
         return ad.run(alpha=args.alpha, delta=args.delta,
-                      apply_pareto=apply_pareto, records=records, embed_fn=embedder)
+                      apply_pareto=apply_pareto, records=records, embed_fn=embedder,
+                      success_threshold=args.success_threshold)
 
     print(f"[1/3] repeated trials (n={args.n_trials}) ...", flush=True)
     out_par = run_repeated_trials(make_result, args.n_trials, apply_pareto=True, label="Pareto")
     out_bud = run_repeated_trials(make_result, args.n_trials, apply_pareto=False, label="budget")
     p1 = plot_guarantee_histogram(out_par, out_bud, args.alpha, args.delta, args.outdir)
     print(f"      -> {p1}")
-    print(f"      +Pareto:     true risk {pooled_true_risk(out_par):.3f}  "
+    print(f"      +Pareto:     pooled test-risk est {pooled_test_risk_estimate(out_par):.3f}  "
           f"corrected viol {corrected_violation_rate(out_par, args.alpha, args.delta):.1%}  "
           f"(raw {raw_violation_rate(out_par, args.alpha):.1%})")
-    print(f"      budget-only: true risk {pooled_true_risk(out_bud):.3f}  "
+    print(f"      budget-only: pooled test-risk est {pooled_test_risk_estimate(out_bud):.3f}  "
           f"corrected viol {corrected_violation_rate(out_bud, args.alpha, args.delta):.1%}  "
           f"(raw {raw_violation_rate(out_bud, args.alpha):.1%})")
 
@@ -446,7 +455,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     alphas = [float(a) for a in args.alphas.split(",")]
     def make_at_alpha(a):
         ad = LTTAdaptor(config_path=args.config, seed=0)
-        return ad.run(alpha=a, delta=args.delta, records=records, embed_fn=embedder)
+        return ad.run(alpha=a, delta=args.delta, records=records, embed_fn=embedder,
+                      success_threshold=args.success_threshold)
     evals = run_alpha_sweep(make_at_alpha, alphas)
     p2 = plot_alpha_sweep(evals, alphas, args.outdir)
     print(f"      -> {p2}")

@@ -1,10 +1,12 @@
 """
 The routing rule 
 
-1. PARETO PRE-FILTER (offline, train/calib only). We drop any model that is dominated 
-   some other model is both cheaper AND at least as accurate across the data.
-   A dominated model can never be the right routing choice, so removing it shrinks
-   the action set without losing anything. 
+1. PARETO PRE-FILTER (offline, on the DESIGN split — disjoint from calibration).
+   We drop any model that is dominated: some other model is both cheaper AND at
+   least as accurate across the data. A dominated model can never be the right
+   routing choice, so removing it shrinks the action set without losing anything.
+   Doing this on the design split (not calibration) keeps the calibration labels
+   reserved solely for the LTT hypothesis test.
 
 2. COST ORDERING. Sort the Pareto survivors cheapest to most expensive. 
 
@@ -114,7 +116,7 @@ class RouterPlan:
     cost_order: np.ndarray          # survivors sorted cheapest to most expensive
     fallback_idx: int               # most-capable survivor
     calibration: CalibrationResult
-    accuracies: np.ndarray          # per-model accuracy on calib (diagnostic)
+    accuracies: np.ndarray          # per-model accuracy on the design split (diagnostic)
 
     @property
     def lambda_hat(self) -> Optional[float]:
@@ -152,19 +154,35 @@ class Router:
         apply_pareto: bool = True,
         n_lambdas: int = 100,
         min_routed: int = MIN_ROUTED_DEFAULT,
+        design_queries: Optional[List[QueryRecord]] = None,
     ) -> RouterPlan:
         """
-        Pareto-filter (on the calibration data), cost-order, then run LTT to
-        certify λ̂ for the cheapest-safe rule over the survivors.
+        Design the routing family (Pareto filter + cost-order + fallback), then
+        run LTT on the calibration data to certify λ̂ for the cheapest-safe rule.
+
+        design_queries:
+            Data used to DESIGN the routing family: which models survive the
+            Pareto filter, their cost ordering, and which is the fallback. These
+            are model-set decisions, NOT part of the LTT test statistic, so they
+            must be made on data disjoint from `calib_queries`. When omitted we
+            fall back to designing on `calib_queries` (kept for tests/back-compat,
+            but the adaptor always passes a disjoint design split).
+
+            Keeping design and calibration disjoint means the calibration labels
+            are used for one thing only — the hypothesis test — so the guarantee
+            is not contaminated by having already fit the action set to them.
 
         apply_pareto=False gives the budget-only ablation (cost-order over ALL
-        models, no domination filter)
+        models, no domination filter).
         """
         if not calib_queries:
             raise ValueError("no calibration queries provided")
         n_models = calib_queries[0].n_models
 
-        accuracies = model_accuracies(calib_queries, n_models)
+        # Design the action set on the design split (falls back to calib if none
+        # supplied). accuracies here are a design-time quantity only.
+        design_source = design_queries if design_queries else calib_queries
+        accuracies = model_accuracies(design_source, n_models)
         costs = self._model_costs(n_models)
 
         if apply_pareto:
