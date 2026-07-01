@@ -164,6 +164,9 @@ def plot_guarantee_histogram(
     outdir: str = DEFAULT_OUTDIR,
     fname: str = "guarantee_histogram.png",
 ) -> str:
+    """
+    Distribution of per-trial realized risk over the CERTIFYING trials only.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -171,27 +174,36 @@ def plot_guarantee_histogram(
     _ensure_outdir(outdir)
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    rp = np.array([o.realized_risk for o in outcomes_pareto])
+    n_total = len(outcomes_pareto)
+    certifying = [o for o in outcomes_pareto if o.certified and o.n_routed > 0]
+    n_abstain = n_total - len(certifying)
+
+    rp = np.array([o.realized_risk for o in certifying])
     true_p = pooled_true_risk(outcomes_pareto)
     cv_p = corrected_violation_rate(outcomes_pareto, alpha, delta)
-    ax.hist(rp, bins=30, alpha=0.6,
-            label=f"+Pareto (true risk {true_p:.3f}, viol {cv_p:.1%})", color="#2a7ae2")
 
-    if outcomes_budget is not None:
-        rb = np.array([o.realized_risk for o in outcomes_budget])
-        true_b = pooled_true_risk(outcomes_budget)
-        cv_b = corrected_violation_rate(outcomes_budget, alpha, delta)
-        ax.hist(rb, bins=30, alpha=0.5,
-                label=f"budget-only (true risk {true_b:.3f}, viol {cv_b:.1%})", color="#e2802a")
+    if len(rp):
+        ax.hist(rp, bins=30, alpha=0.75, color="#2a7ae2",
+                label=f"certifying trials (n={len(rp)})")
 
-    ax.axvline(alpha, color="red", linestyle="--", linewidth=2, label=f"α = {alpha}")
-    ax.axvline(true_p, color="#2a7ae2", linestyle=":", linewidth=2,
+    ax.axvline(alpha, color="#d62728", linestyle="--", linewidth=2, label=f"α = {alpha}")
+    ax.axvline(true_p, color="#1a1a1a", linestyle=":", linewidth=2,
                label=f"pooled true risk = {true_p:.3f}")
-    ax.set_xlabel("realized risk on test split (per trial)")
+
+    # Caption: the numbers that actually decide the guarantee, plus abstention count.
+    caption = (f"pooled true risk {true_p:.3f} ≤ α = {alpha}   |   "
+               f"corrected violations {cv_p:.1%} ≤ δ = {delta:.0%}")
+    if n_abstain:
+        caption += f"\n{n_abstain}/{n_total} trials abstained (certified nothing, excluded from histogram)"
+    if outcomes_budget is not None:
+        true_b = pooled_true_risk(outcomes_budget)
+        caption += f"\nbudget-only pooled true risk {true_b:.3f} (≈ Pareto; shown for reference)"
+
+    ax.set_xlabel("realized risk on test split (certifying trials)")
     ax.set_ylabel("number of trials")
-    ax.set_title(f"Repeated-trials guarantee (n={len(outcomes_pareto)}, δ={delta})\n"
-                 f"true risk ≤ α and corrected violations ≤ δ = {delta:.0%}")
-    ax.legend(fontsize=8)
+    ax.set_title(f"Repeated-trials guarantee (n={n_total} trials, δ={delta})\n{caption}",
+                 fontsize=10)
+    ax.legend(fontsize=9, loc="upper right")
     fig.tight_layout()
     path = os.path.join(outdir, fname)
     fig.savefig(path, dpi=150)
@@ -214,13 +226,18 @@ def plot_alpha_sweep(
     fname: str = "alpha_sweep.png",
 ) -> str:
     """
-    Cost-savings-vs-risk frontier across α.
+    Cost-savings-vs-risk frontier across α, as TWO STACKED PANELS.
 
-    ABSTENTION-AWARE: an α where the scorer certifies nothing routes 0% of
-    queries, so its realized_risk is trivially 0, plotting that as a point on
-    the risk curve reads as "perfect" when it means "did nothing". We therefore
-    plot risk/routed/cost-saved ONLY for CERTIFIED α's and mark abstained α's on
-    the x-axis.
+    Why two panels instead of a twin-axis plot: risk (0–α range) and
+    routed/cost-saved (0–1 proportions) live on different scales. On a twin axis
+    matplotlib auto-zooms the right axis, so a nearly-flat routed-fraction line
+    looks like it soars, and the visual crossing of the risk and cost lines is a
+    pure scaling artifact that encodes nothing. Separate panels, each starting at
+    0, remove that illusion.
+
+    ABSTENTION-AWARE: an α that certifies nothing routes 0% (realized_risk
+    trivially 0). We plot metrics ONLY for certifying α's and mark abstained α's
+    with a shaded band, so "did nothing" never reads as "perfect".
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -236,33 +253,41 @@ def plot_alpha_sweep(
     sav_c  = [e.cost_saved for e, c in zip(evals, cert) if c]
     a_abst = [a for a, c in zip(alphas, cert) if not c]
 
-    fig, ax1 = plt.subplots(figsize=(8, 5))
-    ax1.plot(alphas, alphas, "--", color="gray", alpha=0.6, label="α (target)")
-    if a_c:
-        ax1.plot(a_c, risk_c, "o-", color="#d62728", label="realized risk (certified)")
-    for i, a in enumerate(a_abst):
-        ax1.axvline(a, color="#cccccc", ls=":", lw=1,
-                    label="abstained (no certification)" if i == 0 else None)
-    ax1.set_xlabel("α (risk target)")
-    ax1.set_ylabel("realized risk", color="#d62728")
-    ax1.tick_params(axis="y", labelcolor="#d62728")
-    ax1.set_ylim(bottom=0)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2, 1, figsize=(8, 7), sharex=True, gridspec_kw={"height_ratios": [1, 1]}
+    )
 
-    ax2 = ax1.twinx()
-    if a_c:
-        ax2.plot(a_c, rou_c, "s-", color="#2a7ae2", label="routed fraction (certified)")
-        ax2.plot(a_c, sav_c, "^-", color="#2ca02c", label="cost saved (certified)")
-    ax2.set_ylabel("routed fraction / cost saved", color="#2a7ae2")
-    ax2.tick_params(axis="y", labelcolor="#2a7ae2")
+    # Shade the abstention region (α's below the first certifying α) on both panels.
+    def shade_abstain(ax):
+        for i, a in enumerate(a_abst):
+            ax.axvspan(a - 0.005, a + 0.005, color="#eeeeee", zorder=0,
+                       label="abstains (no certification)" if i == 0 else None)
 
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=8)
-    title = "α-sweep: cost-savings vs risk frontier"
-    if a_abst:
-        first = f"{min(a_c):.2f}" if a_c else "—"
-        title += f"\n(certifies from α = {first}; lighter α's abstain)"
-    ax1.set_title(title)
+    # --- Top panel: realized risk vs the α target (same units, one axis) ---
+    ax_top.plot(alphas, alphas, "--", color="gray", alpha=0.7, label="α (target bound)")
+    if a_c:
+        ax_top.plot(a_c, risk_c, "o-", color="#d62728", label="realized risk (certified)")
+    shade_abstain(ax_top)
+    ax_top.set_ylabel("realized risk")
+    ax_top.set_ylim(bottom=0)
+    ax_top.set_title("α-sweep: risk stays under the target; cost savings grow as α loosens")
+    ax_top.legend(fontsize=8, loc="upper left")
+
+    # --- Bottom panel: routed fraction + cost saved (both 0–1 proportions) ---
+    if a_c:
+        ax_bot.plot(a_c, rou_c, "s-", color="#2a7ae2", label="routed fraction")
+        ax_bot.plot(a_c, sav_c, "^-", color="#2ca02c", label="cost saved")
+    shade_abstain(ax_bot)
+    ax_bot.set_xlabel("α (risk target)")
+    ax_bot.set_ylabel("fraction (0–1)")
+    ax_bot.set_ylim(0, 1.02)
+    ax_bot.legend(fontsize=8, loc="upper left")
+
+    if a_abst and a_c:
+        ax_top.annotate(f"certifies from α = {min(a_c):.2f}",
+                        xy=(min(a_c), 0), xytext=(min(a_c), max(risk_c) * 0.4),
+                        fontsize=8, color="#555555")
+
     fig.tight_layout()
     path = os.path.join(outdir, fname)
     fig.savefig(path, dpi=150)
@@ -271,12 +296,43 @@ def plot_alpha_sweep(
 
 
 # 3. Benchmark comparison
+def _offset_labels(ax, points, base_fontsize=9):
+    """
+    Annotate (x, y, text, color) points, nudging labels that share nearly the
+    same coordinates so they don't overprint. Simple deterministic declutter:
+    group points by rounded position and fan their labels vertically.
+    """
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for x, y, text, color in points:
+        groups[(round(x, 4), round(y, 3))].append((x, y, text, color))
+    for (_key, members) in groups.items():
+        # If points sit near the right edge, fan labels to the LEFT so they stay
+        # inside the axes; otherwise to the right. Fan vertically to declutter.
+        xlim = ax.get_xlim()
+        for i, (x, y, text, color) in enumerate(members):
+            near_right = x > xlim[0] + 0.75 * (xlim[1] - xlim[0])
+            xoff = -6 if near_right else 6
+            ha = "right" if near_right else "left"
+            dy = 10 + 12 * i
+            ax.annotate(
+                text, (x, y), textcoords="offset points", xytext=(xoff, dy),
+                fontsize=base_fontsize, color=color, ha=ha,
+                arrowprops=dict(arrowstyle="-", color=color, lw=0.5, alpha=0.5)
+                if len(members) > 1 else None,
+            )
+
+
 def plot_benchmark_comparison(
     ours: EvalResult,
     repo_root: str = ".",
     outdir: str = DEFAULT_OUTDIR,
     fname: str = "benchmark_comparison.png",
 ) -> str:
+    """
+    Accuracy vs cost, our LTT-Router against reference points on the SAME test
+    set plus any published baselines.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -284,28 +340,48 @@ def plot_benchmark_comparison(
     _ensure_outdir(outdir)
     baselines = load_baseline_results(repo_root)
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    # Reference points from our test set (accuracy vs cost).
+    fig, ax = plt.subplots(figsize=(8.5, 5.5))
+    labels = []
+
+    # Reference points computed on OUR test set (grey x).
     for name, m in ours.reference.items():
         if not np.isnan(m.get("cost", np.nan)):
-            ax.scatter(m["cost"], m["accuracy"], marker="x", color="gray")
-            ax.annotate(name, (m["cost"], m["accuracy"]), fontsize=8, color="gray")
+            ax.scatter(m["cost"], m["accuracy"], marker="x", color="gray", zorder=3)
+            labels.append((m["cost"], m["accuracy"], name, "gray"))
 
-    # Existing baselines (published numbers).
+    # Published baselines (their own numbers) — distinct marker + explicit note.
     for name, m in baselines.items():
-        ax.scatter(m["cost"], m["accuracy"], marker="o", s=60)
-        ax.annotate(name, (m["cost"], m["accuracy"]), fontsize=9)
+        ax.scatter(m["cost"], m["accuracy"], marker="D", s=55, color="#9467bd",
+                   zorder=4, label="published baseline (their metric)")
+        labels.append((m["cost"], m["accuracy"], f"{name} (published)", "#9467bd"))
 
-    # Our router -- highlighted, annotated with the guarantee.
-    ax.scatter(ours.avg_cost, ours.avg_accuracy, marker="*", s=250, color="#d62728",
-               zorder=5, label="LTT-Router")
-    ax.annotate(f"LTT-Router\n(risk≤{ours.alpha}, certified={ours.certified})",
-                (ours.avg_cost, ours.avg_accuracy), fontsize=9, color="#d62728")
+    # Our router — big star, highlighted.
+    ax.scatter(ours.avg_cost, ours.avg_accuracy, marker="*", s=320, color="#d62728",
+               edgecolor="black", linewidth=0.6, zorder=6, label="LTT-Router (ours)")
+    labels.append((ours.avg_cost, ours.avg_accuracy, "LTT-Router", "#d62728"))
+
+    _offset_labels(ax, labels)
+
+    # A little headroom so fanned labels near the top don't touch the title.
+    y0, y1 = ax.get_ylim()
+    ax.set_ylim(y0, y1 + 0.04 * (y1 - y0))
+
+    # The guarantee as a visible badge, not buried text.
+    badge = (f"GUARANTEE: realized risk ≤ {ours.alpha}\n"
+             f"certified = {ours.certified}  (δ = {ours.delta})")
+    box_color = "#2ca02c" if ours.certified else "#d62728"
+    ax.text(0.98, 0.02, badge, transform=ax.transAxes, fontsize=10,
+            ha="right", va="bottom", color="white", weight="bold",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor=box_color, alpha=0.9))
 
     ax.set_xlabel("avg cost per query")
     ax.set_ylabel("accuracy")
-    ax.set_title("Accuracy vs cost -- LTT-Router carries a risk guarantee none of the others report")
-    ax.legend()
+    ax.set_title("Accuracy vs cost — LTT-Router adds a certified risk bound "
+                 "no baseline reports")
+    # De-duplicate legend entries (published-baseline label repeats per point).
+    handles, lab = ax.get_legend_handles_labels()
+    seen = dict(zip(lab, handles))
+    ax.legend(seen.values(), seen.keys(), loc="upper left", fontsize=8)
     fig.tight_layout()
     path = os.path.join(outdir, fname)
     fig.savefig(path, dpi=150)
