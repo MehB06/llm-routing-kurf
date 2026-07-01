@@ -154,8 +154,6 @@ def corrected_violation_rate(
     return float(np.mean(flags)) if flags else 0.0
 
 
-# Backwards-compatible alias (old name) — points at the diagnostic, not the test.
-violation_rate = raw_violation_rate
 
 
 def plot_guarantee_histogram(

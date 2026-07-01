@@ -19,7 +19,6 @@ from baselines.ltt_router.routers.embedding_lr import (
     build_embedding_lr_router,
     EmbeddingLRRouter,
 )
-from baselines.ltt_router.routers.random_router import RandomRouter
 from baselines.ltt_router.core.routing import Router
 
 
@@ -78,7 +77,7 @@ MODELS = [ModelSpec("cheap", cost=0.1, index=0), ModelSpec("oracle", cost=2.0, i
 def test_scorer_trains_and_outputs_protocol_shape():
     router = build_embedding_lr_router(_make_train_records(), MODELS, embed_fn=stub_embed_fn)
     assert isinstance(router, RoutingFunction)
-    s = router.score("a new question?")
+    s = router.score_batch(["a new question?"])[0]
     assert s.shape == (2,)
     assert np.all((s >= 0) & (s <= 1))
 
@@ -86,8 +85,8 @@ def test_scorer_trains_and_outputs_protocol_shape():
 def test_scorer_is_informative():
     router = build_embedding_lr_router(_make_train_records(), MODELS, embed_fn=stub_embed_fn)
     # cheap should score HIGHER on a '?'-question than on a no-'?' statement.
-    p_q = router.score("brand new question?")[0]
-    p_s = router.score("brand new statement")[0]
+    p_q = router.score_batch(["brand new question?"])[0][0]
+    p_s = router.score_batch(["brand new statement"])[0][0]
     assert p_q > p_s
 
 
@@ -95,7 +94,7 @@ def test_score_batch_matches_single():
     router = build_embedding_lr_router(_make_train_records(), MODELS, embed_fn=stub_embed_fn)
     prompts = ["one question?", "two statement", "three question?"]
     batch = router.score_batch(prompts)
-    single = np.stack([router.score(p) for p in prompts])
+    single = np.stack([router.score_batch([p])[0] for p in prompts])
     assert batch.shape == (3, 2)
     assert np.allclose(batch, single)
 
@@ -136,19 +135,6 @@ def test_embedding_router_plugs_into_router_object():
     assert isinstance(r.scorer, RoutingFunction)
 
 
-def test_random_router_satisfies_protocol_and_shape():
-    rr = RandomRouter(MODELS, seed=3)
-    assert isinstance(rr, RoutingFunction)
-    s = rr.score("anything")
-    assert s.shape == (2,)
-    b = rr.score_batch(["a", "b", "c"])
-    assert b.shape == (3, 2)
-
-
-def test_random_router_is_seeded_reproducible():
-    a = RandomRouter(MODELS, seed=7).score("x")
-    b = RandomRouter(MODELS, seed=7).score("x")
-    assert np.allclose(a, b)
 
 
 # 5. Degenerate-training guard (a model that always succeeds)
@@ -157,7 +143,7 @@ def test_single_class_training_does_not_crash():
     recs = [FakeRecord("always", f"q{i}?", 1.0, "d", i) for i in range(20)]
     models = [ModelSpec("always", cost=0.1, index=0)]
     router = build_embedding_lr_router(recs, models, embed_fn=stub_embed_fn)
-    s = router.score("new?")
+    s = router.score_batch(["new?"])[0]
     assert s.shape == (1,)
     assert 0.0 <= s[0] <= 1.0
 

@@ -15,8 +15,8 @@ The routing rule
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+from dataclasses import dataclass
+from typing import List, Optional
 
 import numpy as np
 
@@ -25,7 +25,6 @@ from baselines.ltt_router.core.calibration import (
     cheapest_safe_decision_factory,
     calibrate_threshold,
     CalibrationResult,
-    DecisionFn,
     MIN_ROUTED_DEFAULT,
 )
 
@@ -152,7 +151,6 @@ class Router:
         delta: float = 0.10,
         apply_pareto: bool = True,
         n_lambdas: int = 100,
-        pvalue: str = "binomial",
         min_routed: int = MIN_ROUTED_DEFAULT,
     ) -> RouterPlan:
         """
@@ -185,7 +183,6 @@ class Router:
             fallback_idx=fallback_idx,
             delta=delta,
             n_lambdas=n_lambdas,
-            pvalue=pvalue,
             min_routed=min_routed,
             cost_order=order,
         )

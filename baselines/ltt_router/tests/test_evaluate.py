@@ -110,15 +110,11 @@ def test_evaluate_produces_both_blocks():
     assert ev.alpha == 0.25
     assert 0 <= ev.realized_risk <= 1
     assert 0 <= ev.routed_fraction <= 1
-    # comparable row is JSON-friendly
-    row = ev.comparable_table_row()
-    assert row["method"] == "LTT-Router"
 
 
 def test_realized_risk_matches_manual():
     # realized_risk is CONDITIONAL: regret among actively-routed queries (matches
-    # the certified bound). realized_risk_all is the unconditional diagnostic.
-    # Recompute both independently and check evaluate agrees.
+    # the certified bound). Recompute it independently and check evaluate agrees.
     recs = make_records(300, seed=2)
     result = LTTAdaptor("UNUSED", seed=42).run(alpha=0.30, embed_fn=stub_embed_fn, records=recs)
     ev = evaluate(result)
@@ -127,17 +123,13 @@ def test_realized_risk_matches_manual():
     plan = result.plan
     lam = plan.lambda_hat if plan.lambda_hat is not None else float("inf")
 
-    all_r, routed_r = [], []
+    routed_r = []
     for q, c in zip(result.test_queries, result.chosen_indices):
-        r = regret_loss(int(c), q.correct, q.evaluated)
-        all_r.append(r)
         if is_active_route(q, lam, plan.cost_order):
-            routed_r.append(r)
+            routed_r.append(regret_loss(int(c), q.correct, q.evaluated))
     manual_cond = np.mean(routed_r) if routed_r else 0.0
-    manual_all = np.mean(all_r) if all_r else 0.0
 
     assert ev.realized_risk == pytest.approx(manual_cond)
-    assert ev.realized_risk_all == pytest.approx(manual_all)
 
 
 # 3. experiment harness + figures
@@ -148,7 +140,7 @@ def test_repeated_trials_and_violation_rate():
             alpha=0.25, embed_fn=stub_embed_fn, records=recs, apply_pareto=apply_pareto)
     outcomes = exp.run_repeated_trials(make_result, n_trials=8, apply_pareto=True)
     assert len(outcomes) == 8
-    vr = exp.violation_rate(outcomes, alpha=0.25)
+    vr = exp.raw_violation_rate(outcomes, alpha=0.25)
     assert 0 <= vr <= 1
 
 
@@ -184,7 +176,7 @@ def test_realized_risk_is_conditional_on_routed():
         def __init__(self, models): self._models = models
         @property
         def models(self): return self._models
-        def score(self, prompt, dataset_id=""): return np.zeros(len(self._models))
+        def score_batch(self, prompts): return np.zeros((len(prompts), len(self._models)))
 
     models = [ModelSpec("cheap", 0.1, 0), ModelSpec("oracle", 2.0, 1)]
     rng = np.random.default_rng(0)
@@ -230,5 +222,3 @@ def test_realized_risk_is_conditional_on_routed():
         # the certified (conditional) risk must respect the bound
         assert ev.realized_risk <= ev.alpha + 0.05, \
             f"conditional risk {ev.realized_risk} should be near ≤ α={ev.alpha}"
-    # the diagnostic over ALL queries is a separate number, present and valid
-    assert 0.0 <= ev.realized_risk_all <= 1.0

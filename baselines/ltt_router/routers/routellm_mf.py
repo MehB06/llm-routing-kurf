@@ -211,9 +211,6 @@ class RouteLLMMFRouter:
             out[:, m.index] = np.clip(cal(delta[:, m.index]), 0.0, 1.0)
         return out
 
-    def score(self, prompt: str, dataset_id: str = "") -> np.ndarray:
-        return self.score_batch([prompt])[0]
-
 
 def _load_mf_state(checkpoint_path: str) -> dict:
     import torch

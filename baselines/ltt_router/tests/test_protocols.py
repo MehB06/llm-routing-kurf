@@ -84,8 +84,8 @@ class ConstantRouter:
     def models(self):
         return self._models
 
-    def score(self, prompt: str, dataset_id: str = "") -> np.ndarray:
-        return self._vec.copy()
+    def score_batch(self, prompts) -> np.ndarray:
+        return np.tile(self._vec, (len(prompts), 1))
 
 
 def test_constant_router_satisfies_protocol():
@@ -96,6 +96,6 @@ def test_constant_router_satisfies_protocol():
     ]
     r = ConstantRouter(models, [0.3, 0.6, 0.9])
     assert isinstance(r, RoutingFunction)         # runtime_checkable structural match
-    out = r.score("anything")
+    out = r.score_batch(["anything"])[0]
     assert out.shape == (3,)
     assert np.allclose(out, [0.3, 0.6, 0.9])

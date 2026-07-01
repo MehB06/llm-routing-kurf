@@ -95,10 +95,10 @@ class ScriptedScorer:
     def models(self):
         return self._models
 
-    def score(self, prompt, dataset_id=""):
+    def score_batch(self, prompts):
         # Not used by these tests (queries carry their own scores), but present
         # to satisfy the protocol.
-        return np.zeros(len(self._models))
+        return np.zeros((len(prompts), len(self._models)))
 
 
 def _two_model_calib(n, true_risk, seed=0):
@@ -207,7 +207,7 @@ def test_router_route_never_returns_unevaluated_model():
         def __init__(self, models): self._models = models
         @property
         def models(self): return self._models
-        def score(self, prompt, dataset_id=""): return np.zeros(len(self._models))
+        def score_batch(self, prompts): return np.zeros((len(prompts), len(self._models)))
 
     models = [ModelSpec("cheap", 0.1, 0), ModelSpec("mid", 0.5, 1), ModelSpec("oracle", 2.0, 2)]
     rng = np.random.default_rng(0)

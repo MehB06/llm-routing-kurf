@@ -44,15 +44,13 @@ def _train_split(args):
 def _prompt_disjoint_split(records, fit_frac, seed):
     """Split records into (fit, cal) at the prompt level, stratified per dataset."""
     import random
+    from baselines.ltt_router.splitting import _prompts_by_dataset
     by_ds = defaultdict(list)
     for r in records:
         by_ds[r.dataset_id].append(r)
     fit, cal = [], []
     for _ds, rs in sorted(by_ds.items()):
-        p2r = defaultdict(list)
-        for r in rs:
-            p2r[r.prompt].append(r)
-        prompts = sorted(p2r, key=lambda p: min(rr.record_index for rr in p2r[p]))
+        p2r, prompts = _prompts_by_dataset(rs)
         idx = list(range(len(prompts)))
         random.Random(seed + 7).shuffle(idx)
         fit_pos = set(idx[:int(len(prompts) * fit_frac)])

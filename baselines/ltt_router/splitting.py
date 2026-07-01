@@ -14,7 +14,23 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
-from typing import List, Tuple
+from typing import Dict, List, Tuple
+
+
+def _prompts_by_dataset(ds_records: List) -> Tuple[Dict[str, list], List[str]]:
+    """
+    Group one dataset's records by prompt and return (prompt->records, ordered
+    prompts) where prompts are sorted by their first record_index — the stable,
+    reproducible ordering both split stages rely on.
+    """
+    prompt_to_records = defaultdict(list)
+    for r in ds_records:
+        prompt_to_records[r.prompt].append(r)
+    unique_prompts = sorted(
+        prompt_to_records.keys(),
+        key=lambda p: min(rr.record_index for rr in prompt_to_records[p]),
+    )
+    return prompt_to_records, unique_prompts
 
 
 def _benchmark_train_test_split(
@@ -26,6 +42,10 @@ def _benchmark_train_test_split(
     Faithful reproduction of
     BaselineDataLoader.split_by_dataset_then_prompt(records, train_ratio, seed)
     with no OOD datasets. Prompt-level, stratified within each dataset.
+
+    Kept byte-identical to the benchmark splitter (global RNG, truncating
+    int(), dict dataset order) so our TEST set matches every baseline's — this is
+    asserted by test_splitting.test_test_set_matches_benchmark_splitter.
     """
     random.seed(random_seed)
 
@@ -35,12 +55,7 @@ def _benchmark_train_test_split(
 
     train_records, test_records = [], []
     for _dataset_id, ds_records in dataset_groups.items():
-        prompt_to_records = defaultdict(list)
-        for r in ds_records:
-            prompt_to_records[r.prompt].append(r)
-
-        unique_prompts = list(prompt_to_records.keys())
-        unique_prompts.sort(key=lambda p: min(rr.record_index for rr in prompt_to_records[p]))
+        prompt_to_records, unique_prompts = _prompts_by_dataset(ds_records)
 
         n_train = int(len(unique_prompts) * train_ratio)
         indices = list(range(len(unique_prompts)))
@@ -90,14 +105,7 @@ def three_way_split(
 
     train_records, calib_records = [], []
     for _dataset_id, ds_records in sorted(by_dataset.items()):
-        prompt_to_records = defaultdict(list)
-        for r in ds_records:
-            prompt_to_records[r.prompt].append(r)
-
-        unique_prompts = sorted(
-            prompt_to_records.keys(),
-            key=lambda p: min(rr.record_index for rr in prompt_to_records[p]),
-        )
+        prompt_to_records, unique_prompts = _prompts_by_dataset(ds_records)
 
         n = len(unique_prompts)
         n_calib = int(round(n * calib_share_of_pool))

@@ -155,8 +155,10 @@ def test_raw_score_batch_exposes_delta_with_nan_for_unmapped():
 
 def test_single_score_matches_batch_row():
     scorer, _ = _toy_scorer()
-    S = scorer.score_batch(["only"])
-    assert np.allclose(scorer.score("only"), S[0])
+    multi = scorer.score_batch(["only", "second"])
+    one = scorer.score_batch(["only"])
+    assert one.shape == (1, multi.shape[1])
+    assert np.allclose(one[0], multi[0])
 
 
 def test_build_requires_valid_checkpoint_keys():

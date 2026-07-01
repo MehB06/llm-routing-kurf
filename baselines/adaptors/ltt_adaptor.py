@@ -229,19 +229,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         models_subset=subset,
     )
 
-    plan = result.plan
+    from baselines.ltt_router.eval.metrics import evaluate, format_report
     print(f"models:           {[m.name for m in result.models]}")
-    print(f"certified:        {plan.certified}")
-    print(f"lambda_hat:       {plan.lambda_hat}")
-    print(f"survivors:        {[result.models[i].name for i in plan.survivors]}")
-    print(f"test queries:     {len(result.test_queries)}")
-    routed_frac = float(np.mean(result.chosen_indices != plan.fallback_idx))
-    print(f"routed non-fallback fraction: {routed_frac:.3f}")
+    print(format_report(evaluate(result)))
 
     if args.verbose:
         # Show the calibration loss table so you can SEE whether alpha is
         # achievable.
-        cal = plan.calibration
+        cal = result.plan.calibration
         print(f"\n  {'lambda':>7} {'n_routed':>9} {'risk':>7} {'p-value':>9} {'eligible':>9}")
         step = max(1, len(cal.lambdas) // 20)
         for i in range(0, len(cal.lambdas), step):

@@ -201,7 +201,6 @@ class CalibrationResult:
     risks: np.ndarray
     ns: np.ndarray
     pvalues: np.ndarray
-    pvalue_method: str
     min_routed: int
     certified: bool = field(init=False)
 
@@ -216,7 +215,6 @@ def calibrate_threshold(
     fallback_idx: int,
     delta: float = 0.10,
     n_lambdas: int = 100,
-    pvalue: str = "binomial",
     min_routed: int = MIN_ROUTED_DEFAULT,
     cost_order: Optional[np.ndarray] = None,
 ) -> CalibrationResult:
@@ -239,9 +237,6 @@ def calibrate_threshold(
         Failure probability of the guarantee.
     n_lambdas:
         Resolution of the λ grid over [0, 1].
-    pvalue:
-        Retained for API stability; "binomial" is the only supported method
-        (exact, UMP for the 0/1 loss).
     min_routed:
         Minimum actively-routed count for a λ to be ELIGIBLE for FST. Ineligible
         λ are FILTERED OUT of the sequence.
@@ -281,6 +276,5 @@ def calibrate_threshold(
         risks=risks,
         ns=ns,
         pvalues=pvals,
-        pvalue_method=pvalue,
         min_routed=min_routed,
     )

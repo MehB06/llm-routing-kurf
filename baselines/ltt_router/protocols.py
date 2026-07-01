@@ -11,7 +11,7 @@ scores.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol, Sequence, runtime_checkable
 
 import numpy as np
@@ -115,9 +115,9 @@ class RoutingFunction(Protocol):
         """The ordered model universe this router scores over. Length N."""
         ...
 
-    def score(self, prompt: str, dataset_id: str = "") -> np.ndarray:
+    def score_batch(self, prompts: Sequence[str]) -> np.ndarray:
         """
-        Return float[N] route-to-me scores for one query, aligned to
-        self.models.
+        Return float[M, N] route-to-me scores: one row per prompt, aligned to
+        self.models. This is the only scoring entry point the pipeline uses.
         """
         ...

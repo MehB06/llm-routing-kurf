@@ -71,27 +71,24 @@ class CachingEmbedder:
         self._cache: dict = {}
         self._dim = dim
 
-    def precompute(self, prompts: List[str], show_progress: bool = True) -> None:
-        """Embed all unseen unique prompts in one batched pass (fills the cache)."""
-        unseen = list({p for p in prompts if p not in self._cache})
-        if not unseen:
+    def _fill_cache(self, prompts: List[str]) -> None:
+        """Embed any not-yet-cached prompts in one batched call and store them."""
+        uncached = [p for p in prompts if p not in self._cache]
+        if not uncached:
             return
-        vecs = np.asarray(self._base(unseen))
+        uniq = list(dict.fromkeys(uncached))      # de-dup, preserve order
+        vecs = np.asarray(self._base(uniq))
         if self._dim is None:
             self._dim = vecs.shape[1]
-        for p, v in zip(unseen, vecs):
+        for p, v in zip(uniq, vecs):
             self._cache[p] = v
 
+    def precompute(self, prompts: List[str]) -> None:
+        """Embed all unseen unique prompts in one batched pass (fills the cache)."""
+        self._fill_cache(prompts)
+
     def __call__(self, prompts: List[str]) -> np.ndarray:
-        # Embed any prompts not yet cached (single batched call), then look up all.
-        missing = [p for p in prompts if p not in self._cache]
-        if missing:
-            uniq = list(dict.fromkeys(missing))   # de-dup, preserve order
-            vecs = np.asarray(self._base(uniq))
-            if self._dim is None:
-                self._dim = vecs.shape[1]
-            for p, v in zip(uniq, vecs):
-                self._cache[p] = v
+        self._fill_cache(prompts)
         return np.asarray([self._cache[p] for p in prompts])
 
 # Building the per-model training data
@@ -129,9 +126,6 @@ class EmbeddingLRRouter:
     @property
     def models(self) -> Sequence[ModelSpec]:
         return self._models
-
-    def score(self, prompt: str, dataset_id: str = "") -> np.ndarray:
-        return self.score_batch([prompt])[0]
 
     def score_batch(self, prompts: List[str]) -> np.ndarray:
         """
