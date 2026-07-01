@@ -137,9 +137,8 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
     plan = result.plan
     names = [m.name for m in models]
 
-# Chosen-model accuracy + cost per query, plus per-query active-route status.
-    # The GUARANTEE is conditional: regret ≤ α AMONG actively-routed queries
-    # So realized_risk must use the SAME denominator.
+    # The GUARANTEE is conditional: regret ≤ α AMONG actively-routed queries, so
+    # realized_risk must use that same denominator.
     from baselines.ltt_router.core.calibration import is_active_route
     lam = plan.lambda_hat if plan.lambda_hat is not None else float("inf")
 

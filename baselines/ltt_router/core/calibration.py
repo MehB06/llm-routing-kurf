@@ -1,23 +1,20 @@
 """
-LTT calibration 
+LTT calibration.
 
-It is training-free: nothing here is fitted by gradient descent. Instead it runs a 
-hypothesis test on held-out calibration data and certifies a threshold whose
-POPULATION risk is ≤ α with probability ≥ 1 − δ over the calibration draw. (The
-test set is only an empirical diagnostic; a finite test split may sit above α by
-sampling noise without violating the guarantee.)
+Training-free: nothing here is fitted by gradient descent. It runs a hypothesis
+test on held-out calibration data and certifies a threshold whose POPULATION risk
+is ≤ α with probability ≥ 1 − δ over the calibration draw. (The test set is only
+a diagnostic; a finite test split may sit above α by sampling noise without
+violating the guarantee.)
 
+We calibrate a SINGLE SCALAR threshold λ, applied uniformly: a query may route to
+model i iff that model's score clears λ (no per-model threshold vector).
 
-We calibrate a SINGLE SCALAR threshold λ, applied uniformly: a query may be
-routed to model i iff that model's score clears λ. We do NOT (yet) calibrate a
-per-model threshold vector.
-
-We test λ values in a FIXED ORDER, from the SAFE end (high λ) toward the
-PERMISSIVE end (low λ). FST walks that fixed order, rejecting "λ is unsafe" while
-p ≤ δ and STOPPING at the first failure; λ̂ is the last (most permissive,
-most cost-saving) λ it rejected. FST controls the family-wise error over this
-ordered sequence REGARDLESS of whether risk is monotone in λ — we do not rely on
-monotonicity, which need not hold for a conditional (selective-routing) risk
+Fixed Sequence Testing (FST) walks λ in a fixed order from the SAFE end (high λ)
+toward the PERMISSIVE end (low λ), rejecting "λ is unsafe" while p ≤ δ and
+stopping at the first failure; λ̂ is the last (most permissive) λ it rejected.
+FST controls the family-wise error over this sequence REGARDLESS of whether risk
+is monotone in λ — which need not hold for a conditional (selective-routing) risk
 whose denominator changes with λ.
 """
 
@@ -33,17 +30,13 @@ from baselines.ltt_router.protocols import QueryRecord
 from baselines.ltt_router.core.loss import regret_loss
 
 
-# Minimum number of cheap-routed calibration queries required for a candidate λ
-# to be eligible for testing. Below this the binomial p-value is too noisy to act
-# on: a small-n fluke at the SAFE (high-λ) end can end the FST chain early and
-# certify nothing. This is a pre-specified minimum effective sample size for the
-# routed-query risk estimate. It is data-independent (n depends on scores, not
-# outcomes), so filtering on it preserves FWER ≤ δ. See the sensitivity analysis
-# (50 / 100 / 200) in the results for robustness to this choice.
+# Minimum routed-query count for a λ to be eligible for FST. Below this the
+# binomial p-value is too noisy: a small-n fluke at the SAFE (high-λ) end can end
+# the chain early and certify nothing. It is data-independent (n depends on
+# scores, not outcomes), so filtering on it preserves FWER ≤ δ.
 MIN_ROUTED_DEFAULT = 200
 
 
-# p-values
 def binomial_pvalue(risk_hat: float, n: int, alpha: float) -> float:
     """
     Exact binomial p-value for the null H: true risk ≥ alpha.
@@ -55,9 +48,6 @@ def binomial_pvalue(risk_hat: float, n: int, alpha: float) -> float:
     """
     n_fail = int(round(risk_hat * n))
     return float(stats.binom.cdf(n_fail, n, alpha))
-
-
-
 
 
 
@@ -105,14 +95,14 @@ def cheapest_safe_decision_factory(
         Index of the most capable survivor, used when no candidate clears λ.
 
     Returns
-    DecisionFn: (query, lambda) -> chosen_idx. The first model in cost_order whose
-        score ≥ λ AND which was evaluated on this query; else the fallback.
+    DecisionFn: (query, lambda) -> chosen_idx. The first model in cost_order that
+        was evaluated and whose score ≥ λ; else the fallback.
 
-    Sparse-data fallback: real benchmark data is NOT dense the designated
-    fallback may have no row for a given query. If so we cannot route there (its
-    outcome is unknown and regret would be unscorable). We then fall back to the
-    most-capable model that WAS evaluated, walking cost_order from the most expensive end.
-    QueryRecord guarantees at least one evaluated model, so this always resolves.
+    Sparse-data fallback: benchmark data is not dense, so the designated fallback
+    may have no row for a query (its outcome is unknown, regret unscorable). We
+    then take the most-capable model that WAS evaluated, walking cost_order from
+    the expensive end. QueryRecord guarantees ≥1 evaluated model, so this always
+    resolves.
     """
     cost_order = np.asarray(cost_order, dtype=int)
 

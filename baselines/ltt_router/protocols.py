@@ -1,12 +1,9 @@
 """
-This module defines the interfaces that decouple the three pluggable pieces of
-the system:
+Interfaces that decouple the pluggable pieces of the system:
 
-    RoutingFunction:  f(x) -> scores[N]      score per model
-    (CalibrationCore consumes the above; in calibration.py)
+    RoutingFunction:  f(x) -> scores[N]      one score per model
 
-Nothing below the RoutingFunction boundary knows which router produced the
-scores.
+Nothing below the RoutingFunction boundary knows which router produced the scores.
 """
 
 from __future__ import annotations
@@ -22,16 +19,15 @@ class ModelSpec:
     """
     Static description of one routable model.
 
-    name: Model identifier as it appears in the benchmark .
+    name: Model identifier as it appears in the benchmark.
     cost:
-        Representative scalar cost of querying this model. 
-        (a) order models cheapest-first
-        (b) compute cost-savings metrics. Only the ordering and ratios
-        matter to the routing rule, so any consistent positive scale is fine.
+        Representative scalar cost of querying this model, used to order models
+        cheapest-first and to compute cost-savings metrics. Only the ordering and
+        ratios matter, so any consistent positive scale is fine.
     index:
-        The model's column position in the per-query score / cost arrays. 
-        This is the single source of truth that keeps the N-length
-        arrays aligned across the whole pipeline.
+        The model's column position in the per-query score / cost arrays — the
+        single source of truth that keeps the N-length arrays aligned across the
+        whole pipeline.
     """
 
     name: str
@@ -48,32 +44,30 @@ class ModelSpec:
 @dataclass(frozen=True)
 class QueryRecord:
     """
-    One query, aligned across all N candidate models.
-    Per-query unit the calibration core and routing rule consume. 
-    It is produced by the adaptor from a group of BaselineRecord's
-    that share a prompt. 
+    One query, aligned across all N candidate models. The per-query unit the
+    calibration core and routing rule consume, produced by the adaptor from a
+    group of BaselineRecords that share a prompt.
 
     scores:
-        float[N] — the injected router's "route-to-me" score for each model
-        on this query. Higher = the router is more confident this model will
-        succeed. The calibration only ever thresholds it.
+        float[N] — the router's "route-to-me" score per model. Higher = more
+        confident the model will succeed. Calibration only thresholds it.
     correct:
-        int[N] in {0, 1} — did model i actually produce the right answer?
-        Entries where evaluated[i] is False are UNDEFINED and ignored.
+        int[N] in {0, 1} — did model i produce the right answer? Entries where
+        evaluated[i] is False are UNDEFINED and ignored.
     cost:
         float[N] — per-model cost on this query.
     evaluated:
         bool[N] — was model i actually run on this query in the benchmark?
     dataset_id:
-        Source dataset, retained for stratified splitting and per-dataset metrics.
+        Source dataset, kept for stratified splitting and per-dataset metrics.
     prompt:
-        The shared prompt; the natural key that groups the N rows together.
+        The shared prompt; the key that groups the N rows together.
     """
 
-    scores: np.ndarray       
+    scores: np.ndarray
     correct: np.ndarray      # valid only where evaluated is True
-    cost: np.ndarray         
-    evaluated: np.ndarray    
+    cost: np.ndarray
+    evaluated: np.ndarray
     dataset_id: str = ""
     prompt: str = ""
 
@@ -106,8 +100,8 @@ class RoutingFunction(Protocol):
     The injected router. Any object that can score a query against the N models
     satisfies this protocol.
 
-    A RoutingFunction is responsible ONLY for producing scores and declaring
-    the model universe it scores over. It does NOT know about all that lives above it. 
+    A RoutingFunction is responsible ONLY for producing scores and declaring the
+    model universe it scores over; it knows nothing about what lives above it.
     """
 
     @property

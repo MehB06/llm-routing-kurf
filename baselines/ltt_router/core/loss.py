@@ -1,20 +1,17 @@
 """
 The general N-model routing loss: regret.
 
-Definition:
-L(chosen) = correctness_of_best_attainable - correctness_of_chosen
-
     L(chosen) = 1  iff  (chosen model was WRONG) AND (some evaluated model was RIGHT)
               = 0  otherwise
 
-We only suffer loss when we picked a model that failed and a better
-choice existed. If the chosen model was right, no regret. If every evaluated
-model failed anyway, routing lost us nothing, so no regret either.
+We only suffer loss when we picked a model that failed while a better choice
+existed. If the chosen model was right, or every evaluated model failed anyway,
+there is no regret.
 
-Note we take the baseline over the full evaluated pool, not the
-Pareto-surviving subset. The loss should measure regret against what
-was genuinely achievable on the data. Restricting the candidate set the router is allowed 
-to pick from is a routing policy decision and lives in routing.py. 
+The baseline is taken over the full evaluated pool, not the Pareto-surviving
+subset, so the loss measures regret against what was genuinely achievable.
+Restricting the candidate set the router may pick from is a routing-policy
+decision and lives in routing.py.
 """
 
 from __future__ import annotations
@@ -55,12 +52,8 @@ def regret_loss(
             "must guarantee the fallback model is always evaluated)."
         )
 
-    chosen_correct = int(correct[chosen_idx]) == 1
-
-    # was ANY evaluated model correct?
-    best_attainable_correct = bool(
-        np.any((correct == 1) & evaluated)
-    )
+    chosen_correct = correct[chosen_idx] == 1
+    any_correct = bool(np.any((correct == 1) & evaluated))
 
     # Regret iff we were wrong AND a correct choice existed.
-    return float((not chosen_correct) and best_attainable_correct)
+    return float((not chosen_correct) and any_correct)

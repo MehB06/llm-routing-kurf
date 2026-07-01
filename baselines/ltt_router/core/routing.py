@@ -41,9 +41,7 @@ def model_accuracies(queries: List[QueryRecord], n_models: int) -> np.ndarray:
         ev = q.evaluated
         sums[ev] += q.correct[ev]
         counts[ev] += 1
-    with np.errstate(invalid="ignore", divide="ignore"):
-        acc = np.where(counts > 0, sums / np.maximum(counts, 1), 0.0)
-    return acc
+    return np.where(counts > 0, sums / np.maximum(counts, 1), 0.0)
 
 
 def pareto_survivors(
