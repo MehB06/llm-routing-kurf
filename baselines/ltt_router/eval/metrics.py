@@ -115,6 +115,11 @@ class EvalResult:
     # trials to estimate TRUE risk and form confidence-corrected violation checks.
     n_routed: int = 0             # actively-routed test queries (the risk denominator)
     n_routed_fail: int = 0        # regret events among those (the risk numerator)
+    # Fraction of queries genuinely delegated to a model CHEAPER than the fallback
+    # (real cost-saving routing), vs routed_fraction which also counts a query as
+    # "routed" when only the capable fallback clears λ. This is the number that
+    # reflects how much delegation actually happens.
+    routed_to_cheaper_fraction: float = 0.0
 
 
 
@@ -168,6 +173,20 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
         if queries else 0.0
     )
 
+    # Genuine delegation: an ACTIVE route (some model cleared λ) whose chosen
+    # model is strictly cheaper than the fallback. Gating on is_active_route makes
+    # this a true subset of routed_fraction and correctly reads 0 when nothing is
+    # certified (λ=inf, every query defers). It separates "a cheaper model cleared
+    # λ and saved cost" from "only the capable fallback cleared λ".
+    fb_cost = float(models[plan.fallback_idx].cost)
+    routed_to_cheaper_fraction = (
+        float(np.mean([
+            is_active_route(q, lam, plan.cost_order) and float(models[int(c)].cost) < fb_cost
+            for q, c in zip(queries, chosen)
+        ]))
+        if len(chosen) else 0.0
+    )
+
     # Reference rows on the same test set.
     me = max_expert(queries, n_models)
     reference = {
@@ -194,6 +213,7 @@ def evaluate(result, fallback_for_savings: Optional[int] = None) -> EvalResult:
         survivors=[names[i] for i in plan.survivors],
         n_routed=len(routed_regrets),
         n_routed_fail=int(np.sum(routed_regrets)) if routed_regrets else 0,
+        routed_to_cheaper_fraction=routed_to_cheaper_fraction,
     )
 
 
@@ -206,6 +226,7 @@ def format_report(ev: EvalResult) -> str:
     lines.append(f"  avg cost:    {ev.avg_cost:.4f}")
     lines.append(f"  cost saved:  {ev.cost_saved:.2%} (vs All-Fallback)")
     lines.append(f"  routed:      {ev.routed_fraction:.2%} to a non-fallback model")
+    lines.append(f"  delegated:   {ev.routed_to_cheaper_fraction:.2%} to a cheaper-than-fallback model")
     lines.append("  reference rows (same test set):")
     for name, m in ev.reference.items():
         c = "  n/a" if (isinstance(m.get("cost"), float) and np.isnan(m.get("cost", np.nan))) else f"{m.get('cost', float('nan')):.4f}"

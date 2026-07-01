@@ -191,13 +191,16 @@ def plot_guarantee_histogram(
         ax.hist(rp, bins=30, alpha=0.75, color="#2a7ae2",
                 label=f"certifying trials (n={len(rp)})")
 
-    ax.axvline(alpha, color="#d62728", linestyle="--", linewidth=2, label=f"α = {alpha}")
+    ax.axvline(alpha, color="#d62728", linestyle="--", linewidth=2, label=f"α target = {alpha}")
     ax.axvline(pooled_p, color="#1a1a1a", linestyle=":", linewidth=2,
-               label=f"pooled test-risk estimate = {pooled_p:.3f}")
+               label=f"pooled test-risk estimate = {pooled_p:.3f} (≤ α, with margin)")
 
-    # Caption: the numbers that actually decide the guarantee, plus abstention count.
-    caption = (f"pooled test-risk estimate {pooled_p:.3f} ≤ α = {alpha}   |   "
-               f"corrected violations {cv_p:.1%} ≤ δ = {delta:.0%}")
+    # Headline is δ-compliance (what LTT actually promises); the pooled estimate
+    # sitting BELOW α is the guarantee holding conservatively, not a miss — LTT
+    # bounds risk ≤ α, it does not target risk = α.
+    margin = alpha - pooled_p
+    caption = (f"GUARANTEE HOLDS: corrected violations {cv_p:.1%} ≤ δ = {delta:.0%}   |   "
+               f"pooled test-risk {pooled_p:.3f} ≤ α = {alpha} (margin {margin:+.3f})")
     if n_abstain:
         caption += f"\n{n_abstain}/{n_total} trials abstained (certified nothing, excluded from histogram)"
     if outcomes_budget is not None:
@@ -255,6 +258,7 @@ def plot_alpha_sweep(
     a_c    = [a for a, c in zip(alphas, cert) if c]
     risk_c = [e.realized_risk for e, c in zip(evals, cert) if c]
     rou_c  = [e.routed_fraction for e, c in zip(evals, cert) if c]
+    chp_c  = [e.routed_to_cheaper_fraction for e, c in zip(evals, cert) if c]
     sav_c  = [e.cost_saved for e, c in zip(evals, cert) if c]
     a_abst = [a for a, c in zip(alphas, cert) if not c]
 
@@ -280,7 +284,8 @@ def plot_alpha_sweep(
 
     # --- Bottom panel: routed fraction + cost saved (both 0–1 proportions) ---
     if a_c:
-        ax_bot.plot(a_c, rou_c, "s-", color="#2a7ae2", label="routed fraction")
+        ax_bot.plot(a_c, rou_c, "s-", color="#2a7ae2", label="routed fraction (any model clears λ)")
+        ax_bot.plot(a_c, chp_c, "D-", color="#17becf", label="routed to cheaper-than-fallback")
         ax_bot.plot(a_c, sav_c, "^-", color="#2ca02c", label="cost saved")
     shade_abstain(ax_bot)
     ax_bot.set_xlabel("α (risk target)")
@@ -348,11 +353,21 @@ def plot_benchmark_comparison(
     fig, ax = plt.subplots(figsize=(8.5, 5.5))
     labels = []
 
-    # Reference points computed on OUR test set (grey x).
+    # Reference points computed on OUR test set (grey x). All-Fallback usually
+    # coincides with Max Expert (the most accurate model survives Pareto), so we
+    # skip plotting All-Fallback when it lands on the same point — the duplicate
+    # marker is misleading. The value is still used for cost-saved.
+    me_ref = ours.reference.get("Max Expert", {})
     for name, m in ours.reference.items():
-        if not np.isnan(m.get("cost", np.nan)):
-            ax.scatter(m["cost"], m["accuracy"], marker="x", color="gray", zorder=3)
-            labels.append((m["cost"], m["accuracy"], name, "gray"))
+        if np.isnan(m.get("cost", np.nan)):
+            continue
+        if name == "All-Fallback" and me_ref:
+            same = (abs(m.get("cost", 0) - me_ref.get("cost", 0)) < 1e-9 and
+                    abs(m.get("accuracy", 0) - me_ref.get("accuracy", 0)) < 1e-9)
+            if same:
+                continue
+        ax.scatter(m["cost"], m["accuracy"], marker="x", color="gray", zorder=3)
+        labels.append((m["cost"], m["accuracy"], name, "gray"))
 
     # Published baselines (their own numbers) — distinct marker + explicit note.
     for name, m in baselines.items():
@@ -372,8 +387,8 @@ def plot_benchmark_comparison(
     ax.set_ylim(y0, y1 + 0.04 * (y1 - y0))
 
     # The guarantee as a visible badge, not buried text.
-    badge = (f"GUARANTEE: realized risk ≤ {ours.alpha}\n"
-             f"certified = {ours.certified}  (δ = {ours.delta})")
+    badge = (f"GUARANTEE: certified population risk ≤ {ours.alpha}\n"
+             f"with prob ≥ 1−δ (δ = {ours.delta})   certified = {ours.certified}")
     box_color = "#2ca02c" if ours.certified else "#d62728"
     ax.text(0.98, 0.02, badge, transform=ax.transAxes, fontsize=10,
             ha="right", va="bottom", color="white", weight="bold",

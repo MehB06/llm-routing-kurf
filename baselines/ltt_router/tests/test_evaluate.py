@@ -110,6 +110,10 @@ def test_evaluate_produces_both_blocks():
     assert ev.alpha == 0.25
     assert 0 <= ev.realized_risk <= 1
     assert 0 <= ev.routed_fraction <= 1
+    # routed-to-cheaper is a genuine-delegation subset: bounded, and never more
+    # than the (looser) routed_fraction that also counts fallback-clears-λ.
+    assert 0 <= ev.routed_to_cheaper_fraction <= 1
+    assert ev.routed_to_cheaper_fraction <= ev.routed_fraction + 1e-9
 
 
 def test_realized_risk_matches_manual():
