@@ -1,0 +1,97 @@
+{
+  "meta": {
+    "generated": "2026-07-02T16:18:36",
+    "git_commit": "d51aebb",
+    "args": {
+      "config": "config/baseline_config_performance_cost.yaml",
+      "outdir": "results/ltt_router",
+      "n_trials": 500,
+      "alpha": 0.15,
+      "delta": 0.1,
+      "alphas": "0.15,0.20,0.25,0.30,0.35,0.40",
+      "models": "",
+      "success_threshold": 0.5
+    }
+  },
+  "delta": 0.1,
+  "rows": [
+    {
+      "alpha": 0.15,
+      "certified": true,
+      "lambda_hat": 0.8080808080808082,
+      "realized_risk": 0.11788079470198676,
+      "routed_fraction": 0.3028479743281187,
+      "routed_to_cheaper_fraction": 0.2851985559566787,
+      "avg_accuracy": 0.5996791014841556,
+      "avg_cost": 0.04867174319294031,
+      "cost_saved": 0.20864459319250994,
+      "n_routed": 755,
+      "n_routed_fail": 89
+    },
+    {
+      "alpha": 0.2,
+      "certified": true,
+      "lambda_hat": 0.686868686868687,
+      "realized_risk": 0.16705882352941176,
+      "routed_fraction": 0.5114320096269555,
+      "routed_to_cheaper_fraction": 0.4841556357801845,
+      "avg_accuracy": 0.592057761732852,
+      "avg_cost": 0.041285249803449685,
+      "cost_saved": 0.32874182204970526,
+      "n_routed": 1275,
+      "n_routed_fail": 213
+    },
+    {
+      "alpha": 0.25,
+      "certified": true,
+      "lambda_hat": 0.5353535353535354,
+      "realized_risk": 0.23529411764705882,
+      "routed_fraction": 0.7023666265543522,
+      "routed_to_cheaper_fraction": 0.6674689129562775,
+      "avg_accuracy": 0.5663858804653028,
+      "avg_cost": 0.03357193782390693,
+      "cost_saved": 0.4541528046645523,
+      "n_routed": 1751,
+      "n_routed_fail": 412
+    },
+    {
+      "alpha": 0.3,
+      "certified": true,
+      "lambda_hat": 0.37373737373737376,
+      "realized_risk": 0.2727272727272727,
+      "routed_fraction": 0.8604091456077015,
+      "routed_to_cheaper_fraction": 0.8307260328920979,
+      "avg_accuracy": 0.5439229843561973,
+      "avg_cost": 0.024100726425992803,
+      "cost_saved": 0.6081455293353057,
+      "n_routed": 2145,
+      "n_routed_fail": 585
+    },
+    {
+      "alpha": 0.35,
+      "certified": true,
+      "lambda_hat": 0.25252525252525254,
+      "realized_risk": 0.3155237694572991,
+      "routed_fraction": 0.9534697152025672,
+      "routed_to_cheaper_fraction": 0.9378259125551545,
+      "avg_accuracy": 0.5034095467308464,
+      "avg_cost": 0.014378405206578453,
+      "cost_saved": 0.7662210565093294,
+      "n_routed": 2377,
+      "n_routed_fail": 750
+    },
+    {
+      "alpha": 0.4,
+      "certified": true,
+      "lambda_hat": 0.11111111111111112,
+      "realized_risk": 0.3785628261742272,
+      "routed_fraction": 0.9991977537103891,
+      "routed_to_cheaper_fraction": 0.9979943842759728,
+      "avg_accuracy": 0.4380264741275572,
+      "avg_cost": 0.006142079911752902,
+      "cost_saved": 0.9001357291038152,
+      "n_routed": 2491,
+      "n_routed_fail": 943
+    }
+  ]
+}

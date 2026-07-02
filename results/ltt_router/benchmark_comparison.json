@@ -1,0 +1,58 @@
+{
+  "meta": {
+    "generated": "2026-07-02T16:18:38",
+    "git_commit": "d51aebb",
+    "args": {
+      "config": "config/baseline_config_performance_cost.yaml",
+      "outdir": "results/ltt_router",
+      "n_trials": 500,
+      "alpha": 0.15,
+      "delta": 0.1,
+      "alphas": "0.15,0.20,0.25,0.30,0.35,0.40",
+      "models": "",
+      "success_threshold": 0.5
+    }
+  },
+  "ours": {
+    "alpha": 0.15,
+    "certified": true,
+    "lambda_hat": 0.8080808080808082,
+    "realized_risk": 0.11788079470198676,
+    "routed_fraction": 0.3028479743281187,
+    "routed_to_cheaper_fraction": 0.2851985559566787,
+    "avg_accuracy": 0.5996791014841556,
+    "avg_cost": 0.04867174319294031,
+    "cost_saved": 0.20864459319250994,
+    "n_routed": 755,
+    "n_routed_fail": 89
+  },
+  "reference_rows_same_test_set": {
+    "Oracle": {
+      "accuracy": 0.8162855996791015,
+      "cost": NaN
+    },
+    "Max Expert": {
+      "accuracy": 0.5980746089049338,
+      "cost": 0.06150427832330531,
+      "model": "gemini-2.5-pro"
+    },
+    "All-Cheap": {
+      "accuracy": 0.4147613317288408,
+      "cost": 0.0012492213878860811
+    },
+    "All-Fallback": {
+      "accuracy": 0.5980746089049338,
+      "cost": 0.06150427832330524
+    },
+    "Random Router": {
+      "accuracy": 0.48215002005615726,
+      "cost": 0.014367192207180106
+    }
+  },
+  "published_baselines": {
+    "RouteLLM": {
+      "accuracy": 0.6164852255054433,
+      "cost": 0.032576732271124884
+    }
+  }
+}
