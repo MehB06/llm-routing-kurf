@@ -30,7 +30,7 @@ def _simulate_trials(true_risk, n_routed, n_trials, alpha, delta, seed=0):
     for _ in range(n_trials):
         # calibration draw -> certify via the exact binomial test
         fails_cal = rng.binomial(n_routed, true_risk)
-        certified = binomial_pvalue(fails_cal / n_routed, n_routed, alpha) <= delta
+        certified = binomial_pvalue(fails_cal, n_routed, alpha) <= delta
         if not certified:
             continue
         # independent test draw at the SAME true risk

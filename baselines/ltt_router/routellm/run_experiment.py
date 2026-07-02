@@ -9,19 +9,23 @@ and break disjointness. At seed 42 everything is disjoint by construction:
 
 So for RouteLLM we report:
   1. an α-SWEEP (the certification frontier: where the calibrated MF scorer
-     starts certifying), and
-  2. the BENCHMARK point at a chosen α.
+     starts certifying) — printed as a table and written to JSON. With only a
+     handful of certifying α's the sweep makes a weak FIGURE, so no PNG is
+     generated for it; the numbers live in alpha_sweep_routellm.json.
+  2. the BENCHMARK point at a chosen α — figure + JSON.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import pickle
 from typing import List, Optional
 
-from baselines.ltt_router.eval.metrics import evaluate
+from baselines.ltt_router.eval.metrics import evaluate, load_baseline_results
 from baselines.ltt_router.experiment import (
-    run_alpha_sweep, plot_alpha_sweep, plot_benchmark_comparison,
+    run_alpha_sweep, plot_benchmark_comparison,
+    run_metadata, write_json, _eval_row,
 )
 
 
@@ -63,7 +67,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                       mf_checkpoint=args.mf_checkpoint, mf_calibrators=calmap,
                       success_threshold=args.success_threshold)
 
-    # 1. α-sweep: the certification frontier.
+    # 1. α-sweep: the certification frontier (table + JSON, no figure — see
+    #    module docstring).
     print("[1/2] α-sweep (certification frontier) ...")
     alphas = [float(a) for a in args.alphas.split(",")]
     evals = run_alpha_sweep(run_at_alpha, alphas)
@@ -73,9 +78,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"  {a:6.2f} {str(e.certified):>10} {e.routed_fraction:8.2%} "
               f"{e.realized_risk:8.3f} {e.avg_accuracy:7.3f} {e.avg_cost:9.4f} "
               f"{e.cost_saved:7.2%}")
-    p_sweep = plot_alpha_sweep(evals, alphas, args.outdir,
-                               fname="alpha_sweep_routellm.png")
-    print(f"  -> {p_sweep}")
+    j_sweep = write_json(os.path.join(args.outdir, "alpha_sweep_routellm.json"), {
+        "meta": run_metadata(args),
+        "delta": args.delta,
+        "calibration_method": method,
+        "rows": [_eval_row(a, e) for a, e in zip(alphas, evals)],
+    })
+    print(f"  -> {j_sweep}")
 
     # 2. benchmark point — use the FIRST α that actually certifies, so we never
     #    plot an abstaining (certified=False) router as if it were a result.
@@ -94,6 +103,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     p_bench = plot_benchmark_comparison(ours, repo_root=".", outdir=args.outdir,
                                         fname="benchmark_comparison_routellm.png")
     print(f"  -> {p_bench}")
+    j_bench = write_json(os.path.join(args.outdir, "benchmark_comparison_routellm.json"), {
+        "meta": run_metadata(args),
+        "ours": _eval_row(bench_alpha, ours),
+        "reference_rows_same_test_set": ours.reference,
+        "published_baselines": load_baseline_results("."),
+        "calibration_method": method,
+    })
+    print(f"  -> {j_bench}")
 
     # First α (if any) at which the scorer certifies — the headline number.
     cert_alphas = [a for a, e in zip(alphas, evals) if e.certified]

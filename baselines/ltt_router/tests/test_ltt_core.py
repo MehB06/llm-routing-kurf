@@ -1,18 +1,25 @@
 """
 Tests for the LTT calibration.
 
-Three layers of verification:
+Four layers of verification:
 
-  1. STATISTICAL PRIMITIVES: the binomial p-value, HB p-value, and FST.
+  1. STATISTICAL PRIMITIVES: the binomial p-value and FST.
 
-  2. FST DIRECTION is correct; FST must reject a contiguous prefix from the safe 
-    high-λ end and stop at the first failure low→high. We construct a sequence 
+  2. FST DIRECTION is correct; FST must reject a contiguous prefix from the safe
+    high-λ end and stop at the first failure low→high. We construct a sequence
     with a known answer and assert it.
 
   3. END-TO-END GUARANTEE on synthetic data with a CONTROLLED true risk. We build
      queries whose score perfectly separates regret from no-regret, so we know
      the ground-truth safe threshold, then check that the certified λ̂ keeps
      realized risk ≤ α, and an impossible α certifies nothing.
+
+  4. THE PROMISE ITSELF, Monte-Carlo: on a synthetic model where the population
+     risk R(λ) has a CLOSED FORM, the fraction of calibration draws whose λ̂ is
+     truly unsafe must not exceed δ (up to binomial tolerance). This is the only
+     test that checks the statistical guarantee rather than the mechanics, and it
+     exercises the min_routed eligibility filter under the same conditions the
+     FWER argument covers.
 """
 
 import numpy as np
@@ -31,21 +38,26 @@ from baselines.ltt_router.core.calibration import (
 # 1. Statistical primitives
 def test_binomial_pvalue_basic():
     # 0 failures out of 100 under null risk 0.2 -> very small p-value.
-    p = binomial_pvalue(risk_hat=0.0, n=100, alpha=0.2)
+    p = binomial_pvalue(n_fail=0, n=100, alpha=0.2)
     assert 0.0 <= p < 1e-6
 
 
 def test_binomial_pvalue_at_null_is_large():
-    # observed risk == alpha -> not significant -> p-value near (but below) 0.5+.
-    p = binomial_pvalue(risk_hat=0.2, n=100, alpha=0.2)
+    # observed failures at the null rate -> not significant -> p-value near 0.5.
+    p = binomial_pvalue(n_fail=20, n=100, alpha=0.2)
     assert p > 0.4  # CDF at the mean of a binomial is ~0.5
 
 
-def test_binomial_pvalue_monotone_in_observed_risk():
-    # Higher observed risk -> weaker evidence against "unsafe" -> larger p-value.
+def test_binomial_pvalue_monotone_in_observed_failures():
+    # More observed failures -> weaker evidence against "unsafe" -> larger p-value.
     alpha, n = 0.2, 200
-    ps = [binomial_pvalue(r, n, alpha) for r in (0.0, 0.05, 0.10, 0.15, 0.20)]
+    ps = [binomial_pvalue(k, n, alpha) for k in (0, 10, 20, 30, 40)]
     assert all(ps[i] <= ps[i + 1] for i in range(len(ps) - 1))
+
+
+def test_binomial_pvalue_empty_denominator_is_uninformative():
+    # n = 0 routed queries carries no evidence; p-value must be 1 (never rejects).
+    assert binomial_pvalue(n_fail=0, n=0, alpha=0.2) == 1.0
 
 
 
@@ -129,6 +141,19 @@ def test_decision_factory_skips_unevaluated():
     )
     # cheap clears λ but wasn't evaluated -> skip to oracle
     assert decide(q, 0.5) == 1
+
+
+def test_build_loss_table_counts_match_risks():
+    # n_fails must be the exact integer numerator of each risk entry.
+    queries = _make_two_model_queries(n=300, true_risk=0.2, seed=7)
+    decide = cheapest_safe_decision_factory(cost_order=np.array([0]), fallback_idx=1)
+    lambdas = np.linspace(0.0, 1.0, 11)
+    risks, ns, n_fails = build_loss_table(queries, lambdas, decide, fallback_idx=1)
+    for i in range(len(lambdas)):
+        if ns[i] > 0:
+            assert risks[i] == pytest.approx(n_fails[i] / ns[i])
+        else:
+            assert n_fails[i] == 0 and risks[i] == 0.0
 
 
 # 3. End-to-end guarantee
@@ -231,3 +256,71 @@ def test_low_floor_is_unreliable_across_seeds():
 
     assert min(default_fracs) > 0.5, f"default floor unreliable: {default_fracs}"
     assert min(low_fracs) <= min(default_fracs)
+
+
+# 5. The promise itself: empirical FWER over calibration draws
+def _closed_form_risk_queries(n, rng):
+    """
+    N=2 queries where the population risk has a CLOSED FORM.
+
+    Cheap model (idx 0): score s ~ Uniform(0, 1); correct with probability
+    exactly s (a perfectly calibrated scorer). Fallback (idx 1): always correct.
+    Under the cheapest-safe rule with cost_order=[0], a query is actively routed
+    iff s ≥ λ, and regret = cheap wrong (the fallback is always right), so
+
+        R(λ) = E[1 − s | s ≥ λ] = (1 − λ) / 2.
+
+    Hence λ̂ is TRULY safe iff λ̂ ≥ 1 − 2α — checkable without any test set.
+    """
+    qs = []
+    for i in range(n):
+        s = rng.random()
+        cheap_c = int(rng.random() < s)
+        qs.append(QueryRecord(
+            scores=np.array([s, 0.0]),
+            correct=np.array([cheap_c, 1]),
+            cost=np.array([0.1, 2.0]),
+            evaluated=np.array([True, True]),
+            prompt=f"q{i}",
+        ))
+    return qs
+
+
+def test_fwer_guarantee_holds_empirically():
+    """
+    Monte-Carlo check of the LTT promise: over repeated calibration draws,
+    P(true risk of λ̂ > α) ≤ δ. Uses the closed-form model above so each trial's
+    λ̂ can be judged truly-safe/truly-unsafe exactly, with no test-set noise.
+    Abstention (λ̂ = None) is never a violation. Runs with the min_routed filter
+    active, so the FWER argument for the eligibility filter is exercised too.
+
+    Deliberately the slowest test in the suite (~10–20s): it is the only one
+    that checks the statistical guarantee rather than the mechanics.
+    """
+    alpha, delta = 0.15, 0.10
+    lam_safe = 1.0 - 2.0 * alpha          # λ̂ ≥ 0.7 is truly safe
+    n_trials, n_calib = 120, 600
+    decide = cheapest_safe_decision_factory(cost_order=np.array([0]), fallback_idx=1)
+    rng = np.random.default_rng(0)
+
+    violations, certified = 0, 0
+    for _ in range(n_trials):
+        qs = _closed_form_risk_queries(n_calib, rng)
+        res = calibrate_threshold(
+            qs, alpha=alpha, decision_fn=decide, fallback_idx=1,
+            delta=delta, n_lambdas=21, min_routed=60,
+        )
+        if res.certified:
+            certified += 1
+            if res.lambda_hat < lam_safe - 1e-12:
+                violations += 1
+
+    # Non-vacuous: the test must not pass by constant abstention.
+    assert certified / n_trials > 0.5, f"only {certified}/{n_trials} trials certified"
+
+    # The guarantee, with 3σ binomial tolerance on the Monte-Carlo estimate.
+    tol = 3.0 * (delta * (1.0 - delta) / n_trials) ** 0.5
+    rate = violations / n_trials
+    assert rate <= delta + tol, (
+        f"empirical FWER {rate:.3f} exceeds δ={delta} + tolerance {tol:.3f}"
+    )

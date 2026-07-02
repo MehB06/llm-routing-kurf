@@ -21,7 +21,16 @@ import numpy as np
 
 from baselines.ltt_router.protocols import ModelSpec
 from baselines.ltt_router.routers.embedding_lr import default_embed_fn, EmbedFn
-from baselines.RouteLLM.routers.matrix_factorization.model import MODEL_IDS
+
+
+def _model_ids() -> Dict[str, int]:
+    """
+    RouteLLM's model-name -> MF-row mapping, imported lazily: their model module
+    imports torch at its top level, and deferring this keeps routellm_mf (and its
+    calibration utilities) importable without torch installed.
+    """
+    from baselines.RouteLLM.routers.matrix_factorization.model import MODEL_IDS
+    return MODEL_IDS
 
 
 def _sigmoid(x):
@@ -61,6 +70,11 @@ class ConstantCalibrator:
 
 
 def _fit_platt(delta, y):
+    # NOTE: sklearn's LogisticRegression applies L2 regularisation (C=1.0), so
+    # this is the regularised variant of Platt scaling rather than the textbook
+    # unregularised fit with label smoothing. With hundreds+ of samples per model
+    # the difference is negligible, and the mild shrinkage is safer on the sparse
+    # models; stated here so the paper describes exactly what is fit.
     from sklearn.linear_model import LogisticRegression
     lr = LogisticRegression(max_iter=1000).fit(delta.reshape(-1, 1), y)
     return PlattCalibrator(lr.coef_[0, 0], lr.intercept_[0])
@@ -143,7 +157,12 @@ def fit_model_calibration(delta, y, name, min_samples=50) -> ModelCalibration:
 
 
 def choose_method(cals: Dict[str, ModelCalibration]) -> str:
-    """Pick 'platt' or 'isotonic' by mean CV-ECE over non-degenerate models."""
+    """
+    Pick 'platt' or 'isotonic' by MEAN CV-ECE over the non-degenerate models —
+    one mapping family for the whole run (per-model choice would add a small
+    extra selection on the same data for little gain; each model still gets its
+    own fitted calibrator of the chosen family).
+    """
     def mean_ece(attr):
         vals = [getattr(c, attr) for c in cals.values()
                 if not c.degenerate and not np.isnan(getattr(c, attr))]
@@ -167,6 +186,13 @@ class RouteLLMMFRouter:
                                 models with no calibrator -> constant fallback.
     raw_score_batch(prompts) -> [G, N] raw δ (NaN for unmapped), used to FIT the
                                 calibrators offline.
+
+    fallback_score: score assigned to models absent from RouteLLM's MODEL_IDS
+    table (their MF has no row for them, so δ is undefined). 0.5 is a neutral,
+    uncalibrated constant: such a model can still be routed to if λ̂ < 0.5. The
+    LTT guarantee is unaffected — calibration certifies the rule's risk whatever
+    the scores are — but on data with unmapped models the constant is a known
+    semantic wart, kept explicit here rather than hidden.
     """
 
     def __init__(self, models, P, text_proj, classifier, embed_fn,
@@ -178,7 +204,8 @@ class RouteLLMMFRouter:
         self._embed_fn = embed_fn
         self._calibrators = dict(calibrators) if calibrators else {}
         self._fallback = float(fallback_score)
-        self._row = {m.index: MODEL_IDS.get(m.name) for m in models}
+        ids = _model_ids()
+        self._row = {m.index: ids.get(m.name) for m in models}
 
     @property
     def models(self) -> Sequence[ModelSpec]:
@@ -207,7 +234,13 @@ class RouteLLMMFRouter:
         for m in self._models:
             if np.isnan(delta[:, m.index]).all():
                 continue  # unmapped model -> keep fallback
-            cal = self._calibrators[m.name]  # calibration is required & built-in
+            cal = self._calibrators.get(m.name)
+            if cal is None:
+                raise KeyError(
+                    f"No calibrator for mapped model {m.name!r}. The MF scorer is "
+                    "always calibrated — fit and pass calibrators first:\n"
+                    "  python -m baselines.ltt_router.routellm.pipeline fit-calibrators ..."
+                )
             out[:, m.index] = np.clip(cal(delta[:, m.index]), 0.0, 1.0)
         return out
 

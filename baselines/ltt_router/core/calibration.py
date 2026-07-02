@@ -10,12 +10,25 @@ violating the guarantee.)
 We calibrate a SINGLE SCALAR threshold λ, applied uniformly: a query may route to
 model i iff that model's score clears λ (no per-model threshold vector).
 
+The risk is CONDITIONAL: R(λ) = E[regret | some model clears λ]. The conditioning
+event depends on λ, so the routed-set size n(λ) shrinks as λ rises and R(λ) need
+not be monotone in λ.
+
 Fixed Sequence Testing (FST) walks λ in a fixed order from the SAFE end (high λ)
 toward the PERMISSIVE end (low λ), rejecting "λ is unsafe" while p ≤ δ and
 stopping at the first failure; λ̂ is the last (most permissive) λ it rejected.
 FST controls the family-wise error over this sequence REGARDLESS of whether risk
-is monotone in λ — which need not hold for a conditional (selective-routing) risk
-whose denominator changes with λ.
+is monotone in λ.
+
+Why the min_routed eligibility filter preserves the guarantee: condition on the
+calibration SCORES (and evaluated masks). Given the scores, the routed set at
+every λ — and therefore n(λ), the eligibility of each λ, and the entire FST
+sequence — is fixed; the only remaining randomness is in the OUTCOMES. Given the
+scores, the failure count among the n(λ) routed queries is Binomial(n(λ), R(λ)),
+so each p-value is super-uniform under its null conditionally on the scores, and
+FST's family-wise error control holds conditionally on the scores — hence also
+marginally. Filtering on n(λ) is selection on the conditioning variable, not on
+the test statistics.
 """
 
 from __future__ import annotations
@@ -32,22 +45,27 @@ from baselines.ltt_router.core.loss import regret_loss
 
 # Minimum routed-query count for a λ to be eligible for FST. Below this the
 # binomial p-value is too noisy: a small-n fluke at the SAFE (high-λ) end can end
-# the chain early and certify nothing. It is data-independent (n depends on
-# scores, not outcomes), so filtering on it preserves FWER ≤ δ.
+# the chain early and certify nothing. See the module docstring for why filtering
+# on n(λ) — a function of the scores, not the outcomes — preserves FWER ≤ δ.
 MIN_ROUTED_DEFAULT = 200
 
 
-def binomial_pvalue(risk_hat: float, n: int, alpha: float) -> float:
+def binomial_pvalue(n_fail: int, n: int, alpha: float) -> float:
     """
     Exact binomial p-value for the null H: true risk ≥ alpha.
 
     With a 0/1 loss, the number of failures among n routed queries is
-    Binomial(n, true_risk). Under the null (true_risk = alpha), the probability
-    of seeing this few failures or fewer is the binomial CDF at the observed
-    failure count.
+    Binomial(n, true_risk). Under the null boundary (true_risk = alpha), the
+    probability of seeing this few failures or fewer is the binomial CDF at the
+    observed failure count; it is super-uniform over the whole composite null
+    because the CDF is decreasing in the true risk.
+
+    Takes the exact integer failure count — never a reconstructed mean — so the
+    test stays exact regardless of how callers aggregate losses.
     """
-    n_fail = int(round(risk_hat * n))
-    return float(stats.binom.cdf(n_fail, n, alpha))
+    if n <= 0:
+        return 1.0
+    return float(stats.binom.cdf(int(n_fail), int(n), alpha))
 
 
 
@@ -146,7 +164,7 @@ def build_loss_table(
     cost_order: Optional[np.ndarray] = None,
 ):
     """
-    Build per-λ empirical risk and the routed count, for the rule.
+    Build per-λ empirical risk, routed count, and failure count, for the rule.
 
     For each λ and each query we apply decision_fn(query, λ) to get the chosen
     model, then score it with the regret loss. "Routed" means the rule actively
@@ -159,12 +177,15 @@ def build_loss_table(
     (valid only on dense data where the fallback is always evaluated).
 
     Returns
-    risks : float[L]   mean regret among actively-routed queries, per λ
-    ns    : int[L]     number of actively-routed queries, per λ
+    risks   : float[L]  mean regret among actively-routed queries, per λ
+    ns      : int[L]    number of actively-routed queries, per λ
+    n_fails : int[L]    regret events among them, per λ (exact counts for the
+                        binomial test — the loss is 0/1, so the count is exact)
     """
     L = len(lambdas)
     risks = np.zeros(L)
     ns = np.zeros(L, dtype=int)
+    n_fails = np.zeros(L, dtype=int)
 
     for i, lam in enumerate(lambdas):
         losses = []
@@ -180,9 +201,10 @@ def build_loss_table(
             chosen = decision_fn(q, lam)
             losses.append(regret_loss(chosen, q.correct, q.evaluated))
         ns[i] = len(losses)
+        n_fails[i] = int(np.sum(losses)) if losses else 0
         risks[i] = float(np.mean(losses)) if losses else 0.0
 
-    return risks, ns
+    return risks, ns, n_fails
 
 
 # Top-level calibration
@@ -234,21 +256,25 @@ def calibrate_threshold(
         Resolution of the λ grid over [0, 1].
     min_routed:
         Minimum actively-routed count for a λ to be ELIGIBLE for FST. Ineligible
-        λ are FILTERED OUT of the sequence.
+        λ are FILTERED OUT of the sequence. FWER-safe because n(λ) is a function
+        of the calibration scores only (module docstring).
 
     Returns
     CalibrationResult
     """
     lambdas = np.linspace(0.0, 1.0, n_lambdas)
-    risks, ns = build_loss_table(queries, lambdas, decision_fn, fallback_idx, cost_order)
+    risks, ns, n_fails = build_loss_table(
+        queries, lambdas, decision_fn, fallback_idx, cost_order
+    )
 
-    # p-value per λ for the null (exact binomial, UMP for the 0/1 loss).
+    # p-value per λ for the null (exact binomial on the exact failure count —
+    # UMP for the 0/1 loss).
     pvals = np.ones(len(lambdas))
     for i in range(len(lambdas)):
         if ns[i] == 0:
             pvals[i] = 1.0
             continue
-        pvals[i] = binomial_pvalue(risks[i], ns[i], alpha)
+        pvals[i] = binomial_pvalue(n_fails[i], ns[i], alpha)
 
     # Build the fixed sequence from the SAFE end (high λ) toward permissive (low
     # λ), over ELIGIBLE thresholds only (n ≥ min_routed).

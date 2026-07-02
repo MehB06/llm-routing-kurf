@@ -17,6 +17,15 @@ need no trained checkpoint and no downloads.
 import numpy as np
 import pytest
 
+# RouteLLM's MF model module imports torch + huggingface_hub at its top level;
+# skip this whole file (rather than crash collection) when that chain is
+# missing. The core LTT suite runs without them; only these MF tests need it.
+_rl_model = pytest.importorskip(
+    "baselines.RouteLLM.routers.matrix_factorization.model",
+    reason="RouteLLM MF model module unavailable (needs torch + huggingface_hub); "
+           "MF scorer tests skipped",
+)
+
 from baselines.ltt_router.protocols import ModelSpec, RoutingFunction
 from baselines.ltt_router.routers.routellm_mf import (
     PlattCalibrator,
@@ -29,7 +38,7 @@ from baselines.ltt_router.routers.routellm_mf import (
     build_routellm_mf_router,
 )
 # real names so MODEL_IDS maps them; the scorer reads δ for these.
-from baselines.RouteLLM.routers.matrix_factorization.model import MODEL_NAMES
+MODEL_NAMES = _rl_model.MODEL_NAMES
 
 
 # calibrators

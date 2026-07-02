@@ -47,6 +47,11 @@ def _benchmark_train_test_split(
     int(), dict dataset order) so our TEST set matches every baseline's — this is
     asserted by test_splitting.test_test_set_matches_benchmark_splitter.
     """
+    # WARNING: this mutates the GLOBAL `random` module state. It is deliberate —
+    # the benchmark's own splitter seeds the global RNG, and byte-identical
+    # reproduction is what makes our TEST set match every baseline's. Do NOT
+    # "fix" this with a local random.Random(); it would change the split. Any
+    # caller relying on the global RNG must re-seed after calling this.
     random.seed(random_seed)
 
     dataset_groups = defaultdict(list)

@@ -29,7 +29,14 @@ descent), and only the injected scorer is a trained ML model.
 
 **The guarantee is conditional on routing.** It bounds the regret *among the
 queries actively routed to a cheaper model* — deferrals to the safe fallback are
-not under risk by construction.
+not under risk by construction. The conditioning event depends on λ, so the risk
+need not be monotone in λ; FST does not require monotonicity. The `min_routed`
+power floor filters λ's on their routed *count*, which is a function of the
+calibration scores only (not the outcomes), so conditioning on the scores fixes
+the whole FST sequence and family-wise error control is preserved — see the
+docstring in `core/calibration.py` for the full argument, and
+`tests/test_ltt_core.py::test_fwer_guarantee_holds_empirically` for a
+Monte-Carlo check of the promise on a model with closed-form risk.
 
 ---
 
@@ -55,7 +62,9 @@ Expensive ≠ better, so the rule does **not** assume the most expensive model i
    disjoint from calibration): drop any model that is dominated (some other model
    is both cheaper *and* at least as accurate. A dominated model can never be the
    right choice.) Designing the action set on train keeps the calibration labels
-   reserved solely for the LTT hypothesis test.
+   reserved solely for the LTT hypothesis test. The filter is a heuristic
+   pre-selection on point estimates; the guarantee certifies the *resulting*
+   rule, whatever the selection was.
 2. **Cost ordering**: sort survivors cheapest → most expensive.
 3. **Cheapest-safe routing**: walk survivors cheapest-first, take the first whose
    score clears λ̂; else defer to the most capable *evaluated* model.
@@ -82,21 +91,24 @@ baselines/
     │   └── routellm_mf.py    
     ├── routellm/             # the optional RouteLLM integration (scripts, config, docs)
     │   ├── pipeline.py       # offline prep: build-inputs + fit-calibrators
-    │   ├── run_experiment.py # single-seed α-sweep + benchmark point
+    │   ├── run_experiment.py # single-seed α-sweep (table + JSON) + benchmark point
     │   └── train_config.json # MF training config (dim=384, use_proj=false)
     ├── eval/                 # measurement, separate from the engine
     │   ├── metrics.py        # two metric blocks (benchmark-comparable + guarantee)
     │   └── benchmark.py      # emit BaselineRecords + benchmark-aggregator metrics
     ├── splitting.py          # three-way (train/calib/test) prompt-level split
-    ├── experiment.py         # repeated-trials harness + α-sweep + figures
+    ├── experiment.py         # repeated-trials harness + α-sweep + figures + JSONs
     └── tests/                # synthetic data + stub embedder, no downloads
 
-results/ltt_router/           # generated figures (reproduced by experiment.py)
+results/ltt_router/           # generated figures + the JSONs of their numbers
 ```
 
-The core LTT path (`core/`, `routers/embedding_lr.py`, the adaptor) imports and
-tests with **no torch** installed; the RouteLLM MF scorer is optional and pulled
-in only when `scorer_kind="routellm_mf"` is selected.
+Torch is optional: the core LTT path (`core/`, `routers/embedding_lr.py`, the
+adaptor) and even `routers/routellm_mf.py`'s calibration utilities import
+without it (the torch-dependent pieces — checkpoint loading and RouteLLM's
+model-ID table — are behind lazy imports). Torch is required only to *train or
+load* the MF checkpoint, and `tests/test_routellm_mf.py` skips itself cleanly
+when torch is absent.
 
 ---
 
@@ -112,7 +124,10 @@ pip install -r requirements.txt
 ## Quick start
 
 ```bash
-# tests — no data or model download needed
+# tests — no benchmark data or model download needed. The minimal environment is
+#   pip install numpy scipy scikit-learn matplotlib loguru pytest
+# (the full requirements.txt also works; without torch the MF scorer tests are
+# skipped, everything else runs).
 python -m pytest baselines/ltt_router/tests/ -v
 
 # calibrate + route on the benchmark (--verbose prints the calibration loss table)
@@ -120,7 +135,7 @@ python -m baselines.adaptors.ltt_adaptor \
     --config config/baseline_config_performance_cost.yaml \
     --alpha 0.15 --seed 42 --verbose
 
-# generate the experiment figures (embedding-LR scorer)
+# generate the experiment figures + JSONs (embedding-LR scorer)
 python -m baselines.ltt_router.experiment \
     --config config/baseline_config_performance_cost.yaml \
     --n-trials 500 \
@@ -128,11 +143,17 @@ python -m baselines.ltt_router.experiment \
     --outdir results/ltt_router
 ```
 
-The experiment writes three PNGs to `results/ltt_router/`:
-- `guarantee_histogram.png` — realized-risk distribution over n trials, α line,
-  corrected-violation rate (should be ≤ δ); +Pareto vs budget-only overlay.
-- `alpha_sweep.png` — the cost-savings-vs-risk frontier, with routed and fallback
-  fractions per α.
+The experiment writes three PNGs to `results/ltt_router/`, each with a JSON of
+the numbers behind it (`guarantee_histogram.json`, `alpha_sweep.json`,
+`benchmark_comparison.json` — timestamp, git commit, CLI args, metrics). Numbers
+quoted in this README and in the paper are copied from those JSONs.
+
+- `guarantee_histogram.png` — realized-risk distribution over the *certifying*
+  trials, α line, pooled test-risk estimate and corrected-violation rate
+  (should be ≤ δ); abstaining trials are counted separately, never plotted as
+  zero-risk mass.
+- `alpha_sweep.png` — the cost-savings-vs-risk frontier, with routed and
+  genuinely-delegated fractions per α; abstaining α's are shaded.
 - `benchmark_comparison.png` — our (accuracy, cost) point vs the benchmark
   reference rows and RouteLLM, annotated with the guarantee.
 
@@ -149,16 +170,18 @@ scorer. Pareto survivors at this setting: `deepseek-v3-0324`, `gpt-5`,
 
 ### The guarantee holds (repeated trials, n = 500)
 
-At α = 0.15, δ = 0.10, the pooled test-risk estimate is **0.132 ≤ α** and the
-corrected violation rate is **2.3%** with Pareto pre-filtering and **2.1%**
-budget-only — both well within the δ = 10% bound. The mass of the realized-risk
-distribution sits below the α line. See `results/ltt_router/guarantee_histogram.png`.
+At α = 0.15, δ = 0.10: pooled test-risk estimate **0.133 ≤ α** (margin +0.017)
+and corrected violation rate **1.7% ≤ δ = 10%**. 484 of 500 trials certified;
+the 16 abstaining trials are reported separately and excluded from the
+histogram (an abstention routes nothing and is never a violation). The mass of
+the realized-risk distribution sits below the α line. See
+`results/ltt_router/guarantee_histogram.png` (+ `.json`).
 
 ### Cost-savings vs risk frontier (α-sweep)
 
 Realized risk stays at or below the α target across the sweep (the guarantee
 holding); the routed fraction and cost savings rise as α loosens. See
-`results/ltt_router/alpha_sweep.png`.
+`results/ltt_router/alpha_sweep.png` (+ `.json`).
 
 ### Comparison to baselines
 
@@ -188,13 +211,9 @@ metrics) is untouched.
 ```
 routers/routellm_mf.py        # MF scorer + built-in calibration (Platt/isotonic)
 routellm/pipeline.py          # offline prep: build-inputs + fit-calibrators
-routellm/run_experiment.py    # single-seed α-sweep + benchmark point
+routellm/run_experiment.py    # single-seed α-sweep (table + JSON) + benchmark point
 routellm/train_config.json    # MF training config
 ```
-
-The α-sweep plot (`experiment.plot_alpha_sweep`) is abstention-aware: it draws
-risk/cost only for *certified* α's and marks abstained α's, so the certification
-frontier is explicit rather than a misleading flat-zero region.
 
 ### Why single-seed (seed 42)
 
@@ -209,10 +228,11 @@ seed 42; the LR scorer keeps its full multi-seed histogram.
 ### Calibration is built in 
 
 Raw `δ` has the right *ordering* but is not a success probability, so the MF
-scorer is always calibrated: per-model **Platt** and **isotonic** are fit on the
-held-out `train_cal` slice and the better is chosen by **cross-validated ECE**
-(in-sample ECE would let isotonic overfit to a fake ~0). Mean ECE drops from
-~0.075 (raw `sigmoid(δ)`) to ~0.03 (calibrated).
+scorer is always calibrated: per-model **Platt** and **isotonic** calibrators are
+fit on the held-out `train_cal` slice, and ONE method is chosen for the whole
+run by **mean cross-validated ECE** over the non-degenerate models (in-sample
+ECE would let isotonic overfit to a fake ~0). Mean ECE drops from ~0.075 (raw
+`sigmoid(δ)`) to ~0.03 (calibrated).
 
 Note the reliability diagram (`reliability.png`) is a **secondary** diagnostic of
 the scorer's probability calibration. It is *not* the risk guarantee — the
@@ -226,13 +246,17 @@ The cheapest Pareto survivor (`deepseek-v3-0324`) is only ≈40% accurate, so at
 **strict α the calibrated MF scorer correctly abstains** — no threshold is both
 safe and adequately powered, and the router defers everything (realized
 risk = 0 because nothing is routed, *not* because routing is perfect). It begins
-to certify around **α ≈ 0.25**, where it routes ~95% with a certified bound.
+to certify around **α ≈ 0.25**, where it routes ~95% with a certified bound. The
+sweep is reported as a table + `alpha_sweep_routellm.json` (with so few
+certifying α's it makes a weak figure, so no PNG is generated for it).
 
-This is a principled, reportable result, not a failure: it characterizes the MF
-scorer in the LTT framework's own terms. The LTT-Router trades raw accuracy for
-a *certified* bound — it sits slightly below RouteLLM's unconstrained accuracy
-(~0.585 vs ~0.615) because the guarantee forces conservatism, while carrying the
-risk-control column none of the baselines report.
+At the α = 0.25 benchmark point (`benchmark_comparison_routellm.png` + `.json`):
+accuracy **≈ 0.607** at **≈ $0.024**/query, vs RouteLLM's published **≈ 0.615**
+at **≈ $0.033** — slightly below their unconstrained accuracy at ~27% lower
+cost, while carrying the certified bound (`population regret ≤ 0.25 with
+probability ≥ 0.9`) that none of the baselines report. The small accuracy gap is
+the price of the guarantee and of stretching a pairwise-trained `δ` across all
+N models.
 
 ### Reproduce
 
@@ -254,7 +278,7 @@ python -m baselines.ltt_router.routellm.pipeline fit-calibrators \
     --out baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/calibrators.pkl \
     --seed 42 --diagram baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/reliability.png
 
-# 4. α-sweep + benchmark point (auto-picks first certifying α)
+# 4. α-sweep (table + JSON) + benchmark point (auto-picks first certifying α)
 python -m baselines.ltt_router.routellm.run_experiment \
     --config config/baseline_config_performance_cost.yaml \
     --mf-checkpoint baselines/RouteLLM/checkpoints/ltt_perfcost_seed42/mf_model.pt \
@@ -263,5 +287,5 @@ python -m baselines.ltt_router.routellm.run_experiment \
     --outdir results/ltt_router
 ```
 
-Writes `alpha_sweep_routellm.png` (certification frontier) and
-`benchmark_comparison_routellm.png` (at the first certifying α).
+Writes `alpha_sweep_routellm.json` (certification frontier) and
+`benchmark_comparison_routellm.png` + `.json` (at the first certifying α).

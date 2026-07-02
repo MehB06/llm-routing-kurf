@@ -1,7 +1,9 @@
 """
 Experiment 
 
-Three experiments, each writing a PNG into an output dir 
+Three experiments, each writing a PNG plus a JSON of the underlying numbers
+into an output dir (README/paper numbers are copied from the JSONs, never
+re-typed from figure captions).
 
   1. REPEATED-TRIALS GUARANTEE 
      Run the whole pipeline n_trials times from scratch (fresh seed -> fresh
@@ -45,6 +47,67 @@ DEFAULT_OUTDIR = "results/ltt_router"
 def _ensure_outdir(outdir: str) -> str:
     os.makedirs(outdir, exist_ok=True)
     return outdir
+
+
+def run_metadata(cli_args=None) -> dict:
+    """
+    Provenance block written into every results JSON: timestamp, git commit, and
+    the CLI args that produced the numbers. README/paper numbers should be copied
+    from these JSONs, never re-typed from figure captions.
+    """
+    import datetime
+    import subprocess
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip() or None
+    except Exception:
+        commit = None
+    return {
+        "generated": datetime.datetime.now().isoformat(timespec="seconds"),
+        "git_commit": commit,
+        "args": dict(vars(cli_args)) if cli_args is not None else None,
+    }
+
+
+def write_json(path: str, payload: dict) -> str:
+    """Write a results JSON next to its figure (numbers stay traceable)."""
+    import json
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, default=float)
+    return path
+
+
+def _eval_row(alpha: float, e: EvalResult) -> dict:
+    """One α-sweep row: everything needed to reconstruct the sweep table."""
+    return {
+        "alpha": alpha,
+        "certified": bool(e.certified),
+        "lambda_hat": e.lambda_hat,
+        "realized_risk": e.realized_risk,
+        "routed_fraction": e.routed_fraction,
+        "routed_to_cheaper_fraction": e.routed_to_cheaper_fraction,
+        "avg_accuracy": e.avg_accuracy,
+        "avg_cost": e.avg_cost,
+        "cost_saved": e.cost_saved,
+        "n_routed": e.n_routed,
+        "n_routed_fail": e.n_routed_fail,
+    }
+
+
+def _trials_summary(outcomes: List["TrialOutcome"], alpha: float, delta: float) -> dict:
+    """Numbers behind the guarantee histogram, for one arm (Pareto or budget)."""
+    n = len(outcomes)
+    n_abstained = sum(1 for o in outcomes if not (o.certified and o.n_routed > 0))
+    return {
+        "n_trials": n,
+        "n_certifying": n - n_abstained,
+        "n_abstained": n_abstained,
+        "pooled_test_risk_estimate": pooled_test_risk_estimate(outcomes),
+        "corrected_violation_rate": corrected_violation_rate(outcomes, alpha, delta),
+        "raw_violation_rate_diagnostic": raw_violation_rate(outcomes, alpha),
+    }
 
 
 # 1. Repeated-trials guarantee histogram
@@ -459,6 +522,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     out_bud = run_repeated_trials(make_result, args.n_trials, apply_pareto=False, label="budget")
     p1 = plot_guarantee_histogram(out_par, out_bud, args.alpha, args.delta, args.outdir)
     print(f"      -> {p1}")
+    j1 = write_json(os.path.join(args.outdir, "guarantee_histogram.json"), {
+        "meta": run_metadata(args),
+        "alpha": args.alpha, "delta": args.delta,
+        "pareto": _trials_summary(out_par, args.alpha, args.delta),
+        "budget_only": _trials_summary(out_bud, args.alpha, args.delta),
+    })
+    print(f"      -> {j1}")
     print(f"      +Pareto:     pooled test-risk est {pooled_test_risk_estimate(out_par):.3f}  "
           f"corrected viol {corrected_violation_rate(out_par, args.alpha, args.delta):.1%}  "
           f"(raw {raw_violation_rate(out_par, args.alpha):.1%})")
@@ -475,11 +545,24 @@ def main(argv: Optional[List[str]] = None) -> None:
     evals = run_alpha_sweep(make_at_alpha, alphas)
     p2 = plot_alpha_sweep(evals, alphas, args.outdir)
     print(f"      -> {p2}")
+    j2 = write_json(os.path.join(args.outdir, "alpha_sweep.json"), {
+        "meta": run_metadata(args),
+        "delta": args.delta,
+        "rows": [_eval_row(a, e) for a, e in zip(alphas, evals)],
+    })
+    print(f"      -> {j2}")
 
     print("[3/3] benchmark comparison ...", flush=True)
     ours = evaluate(make_result(0, True))
     p3 = plot_benchmark_comparison(ours, repo_root=".", outdir=args.outdir)
     print(f"      -> {p3}")
+    j3 = write_json(os.path.join(args.outdir, "benchmark_comparison.json"), {
+        "meta": run_metadata(args),
+        "ours": _eval_row(args.alpha, ours),
+        "reference_rows_same_test_set": ours.reference,
+        "published_baselines": load_baseline_results("."),
+    })
+    print(f"      -> {j3}")
 
 
 if __name__ == "__main__":
